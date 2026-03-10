@@ -1,0 +1,58 @@
+{
+  "name": "crypto-trading-bot",
+  "version": "0.1.0",
+  "description": "Automated cryptocurrency trading bot with multiple strategy support",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "jest",
+    "lint": "eslint src --ext .ts",
+    "docker:build": "docker build -t crypto-bot .",
+    "docker:run": "docker run -d --name crypto-bot --env-file .env crypto-bot"
+  },
+  "dependencies": {
+    "ccxt": "^4.3.27",
+    "dotenv": "^16.4.5",
+    "winston": "^3.14.2",
+    "axios": "^1.6.7",
+    "express": "^4.18.2",
+    "pg": "^8.11.3",
+    "ioredis": "^5.3.2",
+    "bullmq": "^5.10.4",
+    "joi": "^17.11.0",
+    "uuid": "^9.0.1",
+    "node-cron": "^3.0.3",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/express": "^4.17.21",
+    "@types/pg": "^8.10.9",
+    "@types/uuid": "^9.0.8",
+    "@types/node-cron": "^3.0.11",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.12",
+    "ts-jest": "^29.1.2",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0"
+  },
+  "keywords": [
+    "crypto",
+    "trading-bot",
+    "bitcoin",
+    "ethereum",
+    "automated-trading",
+    "cryptocurrency"
+  ],
+  "author": "heehawgmedia",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

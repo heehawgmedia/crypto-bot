@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crypto Bot Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="logo">🤖 CryptoBot</div>
+      <nav>
+        <a href="#" class="nav-item active" data-section="overview">Overview</a>
+        <a href="#" class="nav-item" data-section="strategies">Strategies</a>
+        <a href="#" class="nav-item" data-section="trades">Trades</a>
+        <a href="#" class="nav-item" data-section="positions">Positions</a>
+        <a href="#" class="nav-item" data-section="notifications">Notifications</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="status-indicator" id="status-indicator"></div>
+        <small>Status: <span id="status-text">Connecting...</span></small>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="top-bar">
+        <h1>Dashboard</h1>
+        <div class="refresh-time">Last updated: <span id="last-update">Never</span></div>
+      </header>
+
+      <!-- Overview Section -->
+      <section id="overview" class="section active">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <h3>Portfolio Value</h3>
+            <div class="stat-value" id="portfolio-value">$0.00</div>
+          </div>
+          <div class="stat-card">
+            <h3>24h P&L</h3>
+            <div class="stat-value" id="pnl-24h">$0.00</div>
+          </div>
+          <div class="stat-card">
+            <h3>Open Trades</h3>
+            <div class="stat-value" id="open-trades">0</div>
+          </div>
+          <div class="stat-card">
+            <h3>Daily Trades</h3>
+            <div class="stat-value" id="daily-trades">0/10</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Recent Trades</h3>
+          <div class="table-container">
+            <table id="trades-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Price</th>
+                  <th>Amount</th>
+                  <th>Total</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Strategies Section -->
+      <section id="strategies" class="section">
+        <div class="card">
+          <div class="card-header">
+            <h3>Trading Strategies</h3>
+            <button class="btn-primary" onclick="createStrategyModal.show()">+ New Strategy</button>
+          </div>
+          <div class="table-container">
+            <table id="strategies-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Config</th>
+                  <th>Enabled</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Trades Section -->
+      <section id="trades" class="section">
+        <div class="card">
+          <h3>All Trades</h3>
+          <div class="table-container">
+            <table id="all-trades-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Strategy</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Price</th>
+                  <th>Amount</th>
+                  <th>P&L</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Positions Section -->
+      <section id="positions" class="section">
+        <div class="card">
+          <h3>Open Positions</h3>
+          <div class="table-container">
+            <table id="positions-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Quantity</th>
+                  <th>Entry Price</th>
+                  <th>Current</th>
+                  <th>P&L</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Notifications Section -->
+      <section id="notifications" class="section">
+        <div class="card">
+          <h3>Notifications</h3>
+          <div id="notifications-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Create Strategy Modal -->
+  <div id="create-strategy-modal" class="modal">
+    <div class="modal-content">
+      <h3>Create New Strategy</h3>
+      <form id="create-strategy-form">
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" name="name" required>
+        </div>
+        <div class="form-group">
+          <label>Type</label>
+          <select name="type">
+            <option value="DCA">Dollar-Cost Averaging</option>
+            <option value="SWING">Swing Trading</option>
+            <option value="GRID">Grid Trading</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Symbol (e.g., BTC/USDT)</label>
+          <input type="text" name="symbol" required>
+        </div>
+        <div class="form-group">
+          <label>Amount (USD)</label>
+          <input type="number" name="amount_usd" step="0.01" min="1" required>
+        </div>
+        <div class="form-group">
+          <label>Interval (minutes)</label>
+          <input type="number" name="interval_minutes" value="1440" min="1" required>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary" onclick="createStrategyModal.hide()">Cancel</button>
+          <button type="submit" class="btn-primary">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
