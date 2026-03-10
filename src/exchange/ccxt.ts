@@ -1,4 +1,4 @@
-import ccxt from 'ccxt';
+import * as ccxt from 'ccxt';
 import config from '../config';
 
 export type ExchangeInstance = ccxt.Exchange & {
@@ -28,8 +28,8 @@ export class ExchangeAdapter {
     binance.secret = config.exchange.binance.apiSecret;
     this.exchanges.set('binance', binance);
 
-    // Coinbase Pro (Advanced Trade)
-    const coinbase = new ccxt.coinbasepro({
+    // Coinbase (Advanced Trade)
+    const coinbase = new ccxt.coinbase({
       apiKey: config.exchange.coinbase.apiKey,
       secret: config.exchange.coinbase.apiSecret,
       password: config.exchange.coinbase.passphrase,

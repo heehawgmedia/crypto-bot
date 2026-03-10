@@ -1,7 +1,9 @@
+import config from '../config';
 import { ExchangeAdapter } from '../exchange/ccxt';
-import { Trade, Strategy } from '../database/models';
+import { Trade } from '../database/models';
+import { RiskManager } from '../core/risk-manager';
 
-interface DCAParams {
+export interface DCAParams {
   symbol: string;
   amount_usd: number;
   interval_minutes: number;
@@ -28,7 +30,7 @@ export class DCAStrategy {
     this.userId = userId;
   }
 
-  async execute(): Promise<Trade | null> {
+  async execute(riskManager: RiskManager): Promise<Trade | null> {
     if (!this.shouldExecute()) {
       return null;
     }
@@ -36,6 +38,7 @@ export class DCAStrategy {
     const now = new Date();
     this.lastExecution = now;
 
+    // logger.info is global from utils/logger - we'll use console for now or inject logger
     console.log(`[DCA] Executing DCA buy for ${this.params.symbol} - $${this.params.amount_usd}`);
 
     try {
@@ -49,6 +52,25 @@ export class DCAStrategy {
 
       // Calculate quantity
       const quantity = this.params.amount_usd / price;
+
+      // Create preliminary trade object for risk check
+      const preliminaryTrade: Partial<Trade> = {
+        user_id: this.userId,
+        strategy_id: this.strategyId,
+        symbol: this.params.symbol,
+        type: 'BUY',
+        order_type: 'MARKET',
+        side: 'buy',
+        quantity: quantity,
+        price: price,
+      };
+
+      // Check risk limits
+      const riskCheck = await riskManager.checkTrade(preliminaryTrade as Trade);
+      if (!riskCheck.allowed) {
+        console.warn(`Risk check failed: ${riskCheck.reason}`);
+        return null;
+      }
 
       // Create buy order
       const order = await this.exchange.createOrder(
@@ -72,9 +94,9 @@ export class DCAStrategy {
         price: price,
         filled_quantity: order.filled || quantity,
         avg_fill_price: order.average || price,
-        fee: 0, // TODO: fetch from order.fee if available
+        fee: 0,
         fee_currency: 'USDT',
-        pnl: null,
+        pnl: undefined,
         exchange_order_id: order.id,
         opened_at: now,
         closed_at: now,
@@ -82,7 +104,7 @@ export class DCAStrategy {
         updated_at: now,
       };
 
-      console.log(`[DCA] Order executed: ${trade.id} - ${quantity} @ $${price}`);
+      console.log(`[DCA] Order executed: ${quantity.toFixed(6)} @ $${price.toFixed(2)}`);
       return trade;
     } catch (error) {
       console.error('[DCA] Execution error:', error);
@@ -133,15 +155,15 @@ export class DCAStrategy {
 // Factory function
 export function createDCAStrategy(
   exchange: ExchangeAdapter,
-  config: any,
+  strategyConfig: Record<string, any>,
   strategyId: string,
   userId: string
 ): DCAStrategy {
   const params: DCAParams = {
-    symbol: config.symbol || 'BTC/USDT',
-    amount_usd: config.amount_usd || 100,
-    interval_minutes: config.interval_minutes || 1440, // daily by default
-    start_date: config.start_date,
+    symbol: strategyConfig.symbol ? String(strategyConfig.symbol) : 'BTC/USDT',
+    amount_usd: typeof strategyConfig.amount_usd === 'number' ? strategyConfig.amount_usd : 100,
+    interval_minutes: typeof strategyConfig.interval_minutes === 'number' ? strategyConfig.interval_minutes : 1440,
+    start_date: strategyConfig.start_date ? String(strategyConfig.start_date) : undefined,
   };
 
   return new DCAStrategy(exchange, params, strategyId, userId);

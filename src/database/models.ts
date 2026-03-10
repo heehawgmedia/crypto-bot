@@ -1,11 +1,10 @@
 import { Pool, PoolClient } from 'pg';
-import { DefaultEventsMap } from 'socket.io';
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import config from '../config';
 
 export class Database {
   private pool: Pool;
-  private redis: Redis.Redis;
+  private redis: Redis;
 
   constructor() {
     this.pool = new Pool({
@@ -46,7 +45,7 @@ export class Database {
     }
   }
 
-  async getRedis(): Promise<Redis.Redis> {
+  async getRedis(): Promise<Redis> {
     return this.redis;
   }
 

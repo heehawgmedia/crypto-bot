@@ -2,7 +2,8 @@ import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import { db, Trade, Strategy as DBStrategy, Position } from '../database/models';
 import { exchangeAdapter } from '../exchange/ccxt';
-import { DCAStrategy } from '../strategies/dca';
+import { createDCAStrategy } from '../strategies/dca';
+import type { DCAStrategy } from '../strategies/dca';
 import config from '../config';
 import logger from '../utils/logger';
 import { alert } from '../utils/alerts';
@@ -78,7 +79,7 @@ export class TradingBot extends EventEmitter {
 
     switch (dbStrategy.type) {
       case 'DCA':
-        strategy = new DCAStrategy(
+        strategy = createDCAStrategy(
           exchangeAdapter,
           dbStrategy.config,
           dbStrategy.id,
@@ -172,7 +173,9 @@ export class TradingBot extends EventEmitter {
             // Try to get ticker price
             try {
               const ticker = await exchangeAdapter.fetchTicker(exchangeName, `${currency}/USDT`);
-              totalValueUsd += amount * ticker.last;
+              if (ticker.last) {
+                totalValueUsd += amount * ticker.last;
+              }
             } catch {
               // skip
             }

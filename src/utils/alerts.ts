@@ -2,7 +2,7 @@ import axios from 'axios';
 import logger from './logger';
 import config from '../config';
 
-export const alert = {
+class AlertService {
   async tradeExecuted(trade: any) {
     const message = `Trade executed: ${trade.side.toUpperCase()} ${trade.quantity} ${trade.symbol} @ $${trade.avg_fill_price || 'market'}`;
     logger.info(message);
@@ -12,7 +12,7 @@ export const alert = {
       message,
       type: 'TRADE_EXECUTED',
     });
-  },
+  }
 
   async stopLossTriggered(trade: any) {
     const message = `Stop loss triggered for ${trade.symbol} at $${trade.price}`;
@@ -23,7 +23,7 @@ export const alert = {
       message,
       type: 'STOP_LOSS',
     });
-  },
+  }
 
   async takeProfitTriggered(trade: any) {
     const message = `Take profit hit for ${trade.symbol} at $${trade.price}`;
@@ -34,7 +34,7 @@ export const alert = {
       message,
       type: 'TAKE_PROFIT',
     });
-  },
+  }
 
   async error(error: Error | string, context?: Record<string, any>) {
     const message = error instanceof Error ? error.message : error;
@@ -45,7 +45,7 @@ export const alert = {
       message: `${message}\nContext: ${JSON.stringify(context, null, 2)}`,
       type: 'ERROR',
     });
-  },
+  }
 
   async dailySummary(stats: { totalValue: number; pnl24h: number; tradesCount: number }) {
     const message = `Daily Summary:
@@ -60,7 +60,7 @@ Trades: ${stats.tradesCount}`;
       message,
       type: 'DAILY_SUMMARY',
     });
-  },
+  }
 
   async lowBalance(currency: string, balance: number, threshold: number) {
     const message = `Low balance alert: ${currency} = ${balance.toFixed(4)} (below ${threshold})`;
@@ -71,7 +71,7 @@ Trades: ${stats.tradesCount}`;
       message,
       type: 'LOW_BALANCE',
     });
-  },
+  }
 
   private async sendToAll(notification: { title: string; message: string; type: string }) {
     const promises: Promise<void>[] = [];
@@ -87,7 +87,7 @@ Trades: ${stats.tradesCount}`;
     await Promise.allSettled(promises);
   }
 
-  private async sendTelegram(notification: { title: string; message: string }) {
+  private async sendTelegram(notification: { title: string; message: string; type: string }) {
     const { botToken, chatId } = config.notifications.telegram;
     const text = `*${notification.title}*\n${notification.message}`;
 
@@ -105,7 +105,7 @@ Trades: ${stats.tradesCount}`;
     }
   }
 
-  private async sendDiscord(notification: { title: string; message: string }) {
+  private async sendDiscord(notification: { title: string; message: string; type: string }) {
     const { webhookUrl } = config.notifications.discord;
 
     try {
@@ -123,4 +123,6 @@ Trades: ${stats.tradesCount}`;
       logger.error('Failed to send Discord message:', error);
     }
   }
-};
+}
+
+export const alert = new AlertService();
