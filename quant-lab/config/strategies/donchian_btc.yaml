@@ -1,0 +1,11 @@
+name: donchian_btc_4h
+strategy: donchian
+exchange: kraken
+symbol: BTC/USD
+timeframe: 4h
+params:
+  entry_lookback: 20
+  exit_lookback: 10
+param_grid:
+  entry_lookback: [10, 20, 55]
+  exit_lookback: [5, 10, 20]

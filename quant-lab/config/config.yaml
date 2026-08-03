@@ -1,0 +1,56 @@
+mode: paper                     # paper | live | research; paper is the default everywhere
+
+exchanges:
+  kraken:
+    taker_fee_bps: 26
+    maker_fee_bps: 16
+    rate_limit_ms: 1000
+  coinbase:
+    taker_fee_bps: 60
+    maker_fee_bps: 40
+    rate_limit_ms: 400
+  # API keys are NEVER stored here — environment variables only (see .env.example)
+
+data:
+  exchange: kraken
+  symbols: [BTC/USD, ETH/USD]
+  timeframes: [1h, 4h, 1d]
+  start_date: "2019-01-01"
+  parquet_dir: data/parquet
+  max_gap_bars: 3
+
+backtest:
+  slippage_bps: 10
+  initial_capital_usd: 10000
+  execution: next_bar_open      # the only allowed value in v1
+
+walkforward:
+  in_sample_bars: 4380          # ~6 months of 1h bars
+  out_of_sample_bars: 1460      # ~2 months
+  step_bars: 1460               # roll by the OOS width — no OOS overlap
+  min_windows: 4
+  optimize_metric: sharpe
+
+promotion:
+  min_oos_trades: 30            # hard floor; config values below 30 fail validation
+  min_paper_days: 56
+  min_oos_sharpe: 0.0
+
+risk:
+  max_capital_usd: null         # REQUIRED (set by you) before mode can be live; no default
+  max_positions: 3
+  per_strategy_capital_frac: 0.5
+  kill_switches:
+    max_daily_loss_pct: 3.0
+    max_drawdown_pct: 10.0
+    max_consecutive_api_errors: 5
+    flatten_on_trip: false
+
+alerts:
+  telegram:
+    enabled: false              # token/chat id from env: QL_TELEGRAM_BOT_TOKEN / QL_TELEGRAM_CHAT_ID
+    on_fill: true
+    on_kill_switch: true
+
+audit:
+  sqlite_path: data/quantlab.db

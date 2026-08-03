@@ -1,0 +1,13 @@
+name: rsi_mr_btc_1h
+strategy: rsi_mr
+exchange: kraken
+symbol: BTC/USD
+timeframe: 1h
+params:
+  period: 14
+  oversold: 30
+  overbought: 70
+param_grid:
+  period: [7, 14, 21]
+  oversold: [20, 30]
+  overbought: [70, 80]
