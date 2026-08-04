@@ -8,14 +8,17 @@ from typing import Annotated
 import pandas as pd
 import typer
 
+from quant_lab.alerts import alerter_from_config
 from quant_lab.audit.log import AuditLog
 from quant_lab.backtest.engine import CostModel, buy_and_hold, run_backtest
 from quant_lab.config import AppConfig, StrategyInstanceConfig, load_config, load_strategy_config
 from quant_lab.data.fetcher import OhlcvFetcher, make_ccxt_client
 from quant_lab.data.integrity import check_ohlcv
 from quant_lab.data.store import ParquetStore
+from quant_lab.paper.engine import PaperEngine
 from quant_lab.reporting.metrics import compute_metrics
 from quant_lab.reporting.tearsheet import render_tearsheet
+from quant_lab.risk.killswitch import KillSwitchMonitor
 from quant_lab.strategies import build_strategy
 from quant_lab.validation.gates import (
     check_transition,
@@ -29,10 +32,16 @@ data_app = typer.Typer(no_args_is_help=True, help="Fetch, update, and verify OHL
 backtest_app = typer.Typer(no_args_is_help=True, help="Run in-sample backtests (research only).")
 validate_app = typer.Typer(no_args_is_help=True, help="Walk-forward validation (the only promotion path).")
 promote_app = typer.Typer(no_args_is_help=True, help="Promote strategies through pipeline stages.")
+paper_app = typer.Typer(no_args_is_help=True, help="Paper trading on live data, simulated fills.")
+live_app = typer.Typer(no_args_is_help=True, help="Live execution (capital-capped, gated).")
+risk_app = typer.Typer(no_args_is_help=True, help="Kill-switch status and manual reset.")
 app.add_typer(data_app, name="data")
 app.add_typer(backtest_app, name="backtest")
 app.add_typer(validate_app, name="validate")
 app.add_typer(promote_app, name="promote")
+app.add_typer(paper_app, name="paper")
+app.add_typer(live_app, name="live")
+app.add_typer(risk_app, name="risk")
 
 ConfigOpt = Annotated[
     Path, typer.Option("--config", "-c", help="Path to config.yaml", exists=True, dir_okay=False)
@@ -330,6 +339,188 @@ def promote_live(
         f"${cfg.risk.max_capital_usd:,.2f}. Set mode: live in config to enable execution.",
         fg=typer.colors.GREEN,
     )
+
+
+def _refresh_and_read(
+    cfg: AppConfig, scfg: StrategyInstanceConfig
+) -> pd.DataFrame:
+    """Fetch the newest bars for the strategy's market and return the frame,
+    dropping the still-forming candle so signals only ever see closed bars."""
+    client = make_ccxt_client(scfg.exchange, cfg.exchanges[scfg.exchange].rate_limit_ms)
+    store = ParquetStore(cfg.data.parquet_dir)
+    fetcher = OhlcvFetcher(client, store, scfg.exchange)
+    fetcher.update(scfg.symbol, scfg.timeframe, pd.Timestamp(cfg.data.start_date, tz="UTC"))
+    df = store.read(scfg.exchange, scfg.symbol, scfg.timeframe)
+    return df.iloc[:-1] if len(df) else df
+
+
+@paper_app.command("run")
+def paper_run(
+    strategy: StrategyOpt,
+    config: ConfigOpt = DEFAULT_CONFIG,
+    once: Annotated[bool, typer.Option("--once", help="Single poll instead of a loop")] = False,
+    interval: Annotated[int, typer.Option(help="Poll interval in seconds")] = 60,
+) -> None:
+    """Run paper trading: live market data, simulated fills, durable state."""
+    import time
+
+    cfg = _load(config)
+    scfg = load_strategy_config(strategy)
+    audit = AuditLog(cfg.audit.sqlite_path)
+    stage = audit.get_stage(scfg.name)
+    if stage not in ("paper", "live"):
+        typer.secho(
+            f"{scfg.name} is at stage {stage!r}; run `quant-lab validate run` then "
+            "`quant-lab promote paper` first",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    cost = CostModel(
+        taker_fee_bps=cfg.exchanges[scfg.exchange].taker_fee_bps,
+        slippage_bps=cfg.backtest.slippage_bps,
+    )
+    engine = PaperEngine(
+        scfg, cost, audit, cfg.backtest.initial_capital_usd, alerter_from_config(cfg.alerts)
+    )
+    while True:
+        df = _refresh_and_read(cfg, scfg)
+        if df.empty:
+            typer.secho("no data returned from exchange", fg=typer.colors.YELLOW)
+        else:
+            step = engine.step(df)
+            typer.echo(
+                f"{step.bar_time}  equity ${step.equity_usd:,.2f}  {step.detail}"
+            )
+        if once:
+            break
+        time.sleep(interval)
+
+
+@paper_app.command("status")
+def paper_status(
+    strategy: StrategyOpt,
+    config: ConfigOpt = DEFAULT_CONFIG,
+) -> None:
+    """Show the paper track record: start date, state, and every fill."""
+    cfg = _load(config)
+    scfg = load_strategy_config(strategy)
+    audit = AuditLog(cfg.audit.sqlite_path)
+    typer.echo(f"stage: {audit.get_stage(scfg.name)}")
+    typer.echo(f"paper started: {audit.paper_started_at(scfg.name)}")
+    state = audit.get_paper_state(scfg.name)
+    if state is not None:
+        typer.echo(
+            f"state: cash ${state['cash_usd']:,.2f}, units {state['units']:.8f}, "
+            f"last bar {state['last_bar_utc']}"
+        )
+    fills = audit.fills(strategy=scfg.name, mode="paper")
+    typer.echo(f"fills: {len(fills)}")
+    for f in fills:
+        typer.echo(
+            f"  {f['ts_utc']}  {f['side']:<4} {f['qty']:.8f} {f['symbol']} "
+            f"@ {f['price']:.2f}  fee ${f['fee_usd']:.2f}"
+        )
+
+
+@live_app.command("run")
+def live_run(
+    strategy: StrategyOpt,
+    config: ConfigOpt = DEFAULT_CONFIG,
+    once: Annotated[bool, typer.Option("--once", help="Single poll instead of a loop")] = False,
+    interval: Annotated[int, typer.Option(help="Poll interval in seconds")] = 60,
+) -> None:
+    """Run live execution. Requires mode=live, stage=live, and API keys in env.
+
+    Every constraint (capital cap, kill switches, spot-only) is enforced inside
+    the engine; this command only wires it together.
+    """
+    import os
+    import time
+
+    import ccxt
+
+    from quant_lab.live.engine import LiveEngine
+
+    cfg = _load(config)
+    scfg = load_strategy_config(strategy)
+    audit = AuditLog(cfg.audit.sqlite_path)
+
+    prefix = f"QL_{scfg.exchange.upper()}"
+    api_key = os.environ.get(f"{prefix}_API_KEY", "")
+    api_secret = os.environ.get(f"{prefix}_API_SECRET", "")
+    if not api_key or not api_secret:
+        typer.secho(
+            f"missing {prefix}_API_KEY / {prefix}_API_SECRET in environment",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    client = getattr(ccxt, scfg.exchange)(
+        {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
+    )
+
+    killswitch = KillSwitchMonitor(cfg.risk.kill_switches, audit)
+    alerter = alerter_from_config(cfg.alerts)
+    try:
+        engine = LiveEngine(scfg, cfg, client, audit, killswitch, alerter)
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.secho(
+        f"LIVE trading {scfg.name} on {scfg.exchange} {scfg.symbol} — capital cap "
+        f"${cfg.risk.max_capital_usd:,.2f}",
+        fg=typer.colors.YELLOW,
+    )
+    while True:
+        df = _refresh_and_read(cfg, scfg)
+        if df.empty:
+            typer.secho("no data returned from exchange", fg=typer.colors.YELLOW)
+        else:
+            step = engine.step(df)
+            typer.echo(f"{df.index[-1]}  {step.detail}")
+        if once:
+            break
+        time.sleep(interval)
+
+
+@risk_app.command("status")
+def risk_status(config: ConfigOpt = DEFAULT_CONFIG) -> None:
+    """Show kill-switch state and configured limits."""
+    cfg = _load(config)
+    audit = AuditLog(cfg.audit.sqlite_path)
+    tripped, reason, ts = audit.kill_switch_state()
+    ks = cfg.risk.kill_switches
+    typer.echo(f"kill switch: {'TRIPPED' if tripped else 'armed (not tripped)'}")
+    if tripped:
+        typer.echo(f"  reason: {reason}")
+        typer.echo(f"  tripped at: {ts}")
+    typer.echo(
+        f"limits: daily loss {ks.max_daily_loss_pct}%, drawdown {ks.max_drawdown_pct}%, "
+        f"api errors {ks.max_consecutive_api_errors}, flatten_on_trip={ks.flatten_on_trip}"
+    )
+    cap = cfg.risk.max_capital_usd
+    typer.echo(f"max_capital_usd: {'NOT SET' if cap is None else f'${cap:,.2f}'}")
+
+
+@risk_app.command("reset")
+def risk_reset(config: ConfigOpt = DEFAULT_CONFIG) -> None:
+    """Manually reset a tripped kill switch (the only way to re-enable trading)."""
+    cfg = _load(config)
+    audit = AuditLog(cfg.audit.sqlite_path)
+    tripped, reason, ts = audit.kill_switch_state()
+    if not tripped:
+        typer.echo("kill switch is not tripped; nothing to reset")
+        raise typer.Exit(code=0)
+    typer.echo(f"kill switch tripped at {ts}: {reason}")
+    typed = typer.prompt("Type RESET to confirm re-enabling trading")
+    if typed != "RESET":
+        typer.secho("confirmation mismatch; kill switch remains tripped", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    audit.reset_kill_switch(confirmed_by="cli")
+    typer.secho("kill switch reset; trading re-enabled", fg=typer.colors.GREEN)
 
 
 if __name__ == "__main__":
