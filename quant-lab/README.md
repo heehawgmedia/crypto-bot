@@ -84,6 +84,49 @@ Orders, fills, promotions, kill-switch events, and paper state live in
 pytest
 ```
 
+## Kraken go-live runbook
+
+The pipeline targets Kraken Pro (spot). Order of operations, once a strategy
+has passed walk-forward validation and its paper period:
+
+1. **Deep history.** Kraken's REST API only serves the most recent ~720
+   candles per timeframe. Bootstrap history from Kraken's downloadable OHLCVT
+   archives, then keep current with the API:
+   ```bash
+   quant-lab data import-csv XBTUSD_60.csv --symbol BTC/USD --timeframe 1h
+   quant-lab data update && quant-lab data check
+   ```
+2. **API keys** (Kraken -> Settings -> API): create a key with **Query Funds**
+   and **Create & Modify Orders** only. No withdrawal permission. Enable the
+   IP allowlist. Put the key in `.env` as `QL_KRAKEN_API_KEY` /
+   `QL_KRAKEN_API_SECRET`.
+3. **Set the capital cap**: `risk.max_capital_usd` in `config/config.yaml`.
+   Live promotion and the live engine both refuse to run without it.
+4. **Promote**: `quant-lab promote live -s <yaml>` — shows the full paper
+   record and requires typing the strategy name.
+5. **Set `mode: live`** in config, then `quant-lab live run -s <yaml>`.
+
+Live safety properties (all enforced in code and covered by tests):
+
+- **Reconciliation before trading**: the audited position must actually exist
+  in the Kraken account (`quant-lab live reconcile`; `live run` refuses to
+  start on drift). Your personal coins in the same account are ignored —
+  only a *shortfall* against the bot's book is drift.
+- **Idempotent orders**: every order carries a deterministic client order id
+  derived from (strategy, bar, side). Kraken rejects duplicate ids, so a
+  crash/retry can never double a position.
+- **One action per bar**: each completed candle is processed at most once
+  (durable marker in SQLite).
+- **Exchange market rules**: order sizes are floored to Kraken's amount
+  precision and checked against minimum size/notional locally; unfit orders
+  are audited as rejections instead of burning API calls.
+- **Durable risk anchors**: the drawdown peak and daily-loss baseline live in
+  SQLite — restarting the process cannot reset them.
+- After any order **error**, run `quant-lab live reconcile` before trusting
+  the book (the engine prints this reminder and audits the error).
+
+Inspect everything: `quant-lab audit events|orders|fills`.
+
 ## Non-negotiables (enforced in code, not documentation)
 
 - Signals compute on bar close, fills happen at next bar open; fees + slippage

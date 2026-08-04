@@ -93,6 +93,9 @@ class RiskConfig(_StrictModel):
     max_capital_usd: float | None = Field(default=None, gt=0)
     max_positions: int = Field(default=3, ge=1, le=3)
     per_strategy_capital_frac: float = Field(default=0.5, gt=0, le=1.0)
+    # Allowed shortfall (fraction of the audited position) between the audit
+    # book and the exchange balance before live trading refuses to start.
+    reconcile_tolerance_frac: float = Field(default=0.01, ge=0, le=0.5)
     kill_switches: KillSwitchConfig
 
 

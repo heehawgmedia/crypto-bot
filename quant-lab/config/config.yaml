@@ -34,7 +34,8 @@ walkforward:
 promotion:
   min_oos_trades: 30            # hard floor; config values below 30 fail validation
   min_paper_days: 56
-  min_oos_sharpe: 0.0
+  min_oos_sharpe: 0.0           # extra bar: stitched OOS Sharpe must be >= this
+                                # (set very negative to rely on the trade floor alone)
 
 risk:
   max_capital_usd: null         # REQUIRED (set by you) before mode can be live; no default

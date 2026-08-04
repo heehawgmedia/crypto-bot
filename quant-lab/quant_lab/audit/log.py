@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS orders (
     qty REAL NOT NULL,
     price REAL,                     -- reference price at submission
     status TEXT NOT NULL,           -- filled | rejected | error
-    reason TEXT
+    reason TEXT,
+    client_order_id TEXT            -- deterministic id sent to the exchange (live only)
 );
 
 CREATE TABLE IF NOT EXISTS fills (
@@ -75,7 +76,31 @@ CREATE TABLE IF NOT EXISTS kill_switch (
     tripped_utc TEXT
 );
 INSERT OR IGNORE INTO kill_switch (id, tripped) VALUES (1, 0);
+
+-- Durable live-engine state. Risk anchors persist here so a process restart
+-- can never reset the drawdown peak or the daily-loss baseline (which would
+-- amount to a kill-switch bypass).
+CREATE TABLE IF NOT EXISTS live_state (
+    strategy TEXT PRIMARY KEY,
+    last_bar_utc TEXT,
+    day_date TEXT,
+    day_start_equity REAL,
+    peak_equity REAL,
+    updated_utc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS config_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    config_hash TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    updated_utc TEXT NOT NULL
+);
 """
+
+# Additive migrations for databases created before a column existed.
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("orders", "client_order_id", "ALTER TABLE orders ADD COLUMN client_order_id TEXT"),
+]
 
 
 def _now_iso() -> str:
@@ -88,6 +113,10 @@ class AuditLog:
         self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        for table, column, ddl in _MIGRATIONS:
+            existing = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                self._conn.execute(ddl)
         self._conn.commit()
 
     def close(self) -> None:
@@ -127,14 +156,37 @@ class AuditLog:
         price: float | None,
         status: str,
         reason: str | None = None,
+        client_order_id: str | None = None,
     ) -> int:
         cursor = self._conn.execute(
             "INSERT INTO orders (ts_utc, mode, strategy, exchange, symbol, side, qty, price,"
-            " status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (_now_iso(), mode, strategy, exchange, symbol, side, qty, price, status, reason),
+            " status, reason, client_order_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _now_iso(), mode, strategy, exchange, symbol, side, qty, price, status,
+                reason, client_order_id,
+            ),
         )
         self._conn.commit()
         return int(cursor.lastrowid or 0)
+
+    def orders(
+        self,
+        strategy: str | None = None,
+        mode: str | None = None,
+        status: str | None = None,
+    ) -> list[sqlite3.Row]:
+        query = "SELECT * FROM orders WHERE 1=1"
+        args: list[Any] = []
+        if strategy is not None:
+            query += " AND strategy = ?"
+            args.append(strategy)
+        if mode is not None:
+            query += " AND mode = ?"
+            args.append(mode)
+        if status is not None:
+            query += " AND status = ?"
+            args.append(status)
+        return list(self._conn.execute(query + " ORDER BY id", args))
 
     def record_fill(
         self,
@@ -216,6 +268,54 @@ class AuditLog:
             (strategy, cash_usd, units, last_bar_utc, _now_iso()),
         )
         self._conn.commit()
+
+    # -- live engine state (bar dedup + persisted risk anchors) ------------
+
+    def get_live_state(self, strategy: str) -> sqlite3.Row | None:
+        row = self._conn.execute(
+            "SELECT * FROM live_state WHERE strategy = ?", (strategy,)
+        ).fetchone()
+        return row if isinstance(row, sqlite3.Row) else None
+
+    def set_live_state(
+        self,
+        strategy: str,
+        *,
+        last_bar_utc: str | None,
+        day_date: str | None,
+        day_start_equity: float | None,
+        peak_equity: float | None,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO live_state (strategy, last_bar_utc, day_date, day_start_equity,"
+            " peak_equity, updated_utc) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(strategy) DO UPDATE SET last_bar_utc = excluded.last_bar_utc,"
+            " day_date = excluded.day_date, day_start_equity = excluded.day_start_equity,"
+            " peak_equity = excluded.peak_equity, updated_utc = excluded.updated_utc",
+            (strategy, last_bar_utc, day_date, day_start_equity, peak_equity, _now_iso()),
+        )
+        self._conn.commit()
+
+    # -- config-change tracking --------------------------------------------
+
+    def note_config(self, config_hash: str, config_json: str) -> bool:
+        """Record the active config; log a config_change event when it differs
+        from the last one seen. Returns True when a change was recorded."""
+        row = self._conn.execute("SELECT config_hash FROM config_state WHERE id = 1").fetchone()
+        previous = row["config_hash"] if row else None
+        if previous == config_hash:
+            return False
+        self._conn.execute(
+            "INSERT INTO config_state (id, config_hash, config_json, updated_utc)"
+            " VALUES (1, ?, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET config_hash = excluded.config_hash,"
+            " config_json = excluded.config_json, updated_utc = excluded.updated_utc",
+            (config_hash, config_json, _now_iso()),
+        )
+        self._conn.commit()
+        kind = "config_registered" if previous is None else "config_change"
+        self.record(kind, {"old_hash": previous, "new_hash": config_hash})
+        return True
 
     # -- kill switch latch -------------------------------------------------
 

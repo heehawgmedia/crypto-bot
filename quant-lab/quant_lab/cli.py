@@ -35,6 +35,7 @@ promote_app = typer.Typer(no_args_is_help=True, help="Promote strategies through
 paper_app = typer.Typer(no_args_is_help=True, help="Paper trading on live data, simulated fills.")
 live_app = typer.Typer(no_args_is_help=True, help="Live execution (capital-capped, gated).")
 risk_app = typer.Typer(no_args_is_help=True, help="Kill-switch status and manual reset.")
+audit_app = typer.Typer(no_args_is_help=True, help="Inspect the audit trail.")
 app.add_typer(data_app, name="data")
 app.add_typer(backtest_app, name="backtest")
 app.add_typer(validate_app, name="validate")
@@ -42,6 +43,18 @@ app.add_typer(promote_app, name="promote")
 app.add_typer(paper_app, name="paper")
 app.add_typer(live_app, name="live")
 app.add_typer(risk_app, name="risk")
+app.add_typer(audit_app, name="audit")
+
+
+def _open_audit(cfg: AppConfig) -> AuditLog:
+    """Open the audit DB and record the active config (hash) so any config
+    change between runs lands in the audit trail."""
+    import hashlib
+
+    audit = AuditLog(cfg.audit.sqlite_path)
+    snapshot = cfg.model_dump_json()
+    audit.note_config(hashlib.sha256(snapshot.encode()).hexdigest(), snapshot)
+    return audit
 
 ConfigOpt = Annotated[
     Path, typer.Option("--config", "-c", help="Path to config.yaml", exists=True, dir_okay=False)
@@ -118,6 +131,40 @@ def ls(config: ConfigOpt = DEFAULT_CONFIG) -> None:
                 f"{cfg.data.exchange} {sym} {tf}: {len(df)} bars, "
                 f"{df.index[0]} -> {df.index[-1]}"
             )
+
+
+@data_app.command("import-csv")
+def import_csv(
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, help="CSV file to import")],
+    symbol: Annotated[str, typer.Option(help="Market symbol, e.g. BTC/USD")],
+    timeframe: Annotated[str, typer.Option(help="Bar timeframe, e.g. 1h")],
+    config: ConfigOpt = DEFAULT_CONFIG,
+    exchange: Annotated[str | None, typer.Option(help="Exchange (default: data.exchange)")] = None,
+) -> None:
+    """Bulk-import OHLCV history from a CSV (e.g. Kraken's OHLCVT archives).
+
+    Kraken's API only serves the most recent ~720 candles; use their
+    downloadable OHLCVT files for deep history, then keep current with
+    `quant-lab data update`.
+    """
+    from quant_lab.data.importer import read_ohlcv_csv
+
+    cfg = _load(config)
+    exch = exchange or cfg.data.exchange
+    try:
+        df = read_ohlcv_csv(path)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+    store = ParquetStore(cfg.data.parquet_dir)
+    total = store.write(exch, symbol, timeframe, df)
+    typer.echo(f"imported {len(df)} bars from {path}; {total} stored for {exch} {symbol} {timeframe}")
+    report = check_ohlcv(
+        store.read(exch, symbol, timeframe), timeframe, cfg.data.max_gap_bars
+    )
+    typer.echo(report.summary())
+    if not report.ok:
+        raise typer.Exit(code=1)
 
 
 StrategyOpt = Annotated[
@@ -240,7 +287,7 @@ def validate_run(
 
     decision = evaluate_validation_gate(wf, cfg, scfg.timeframe)
     typer.echo("")
-    audit = AuditLog(cfg.audit.sqlite_path)
+    audit = _open_audit(cfg)
     if decision.passed:
         transition = check_transition(audit.get_stage(scfg.name), "validated")
         if not transition.passed:
@@ -268,7 +315,7 @@ def promote_paper(
     """Move a validated strategy into paper trading (starts the paper clock)."""
     cfg = _load(config)
     scfg = load_strategy_config(strategy)
-    audit = AuditLog(cfg.audit.sqlite_path)
+    audit = _open_audit(cfg)
     transition = check_transition(audit.get_stage(scfg.name), "paper")
     if not transition.passed:
         typer.secho(transition.summary(), fg=typer.colors.RED, err=True)
@@ -290,7 +337,7 @@ def promote_live(
     minimum paper duration, and requires typing the exact strategy name."""
     cfg = _load(config)
     scfg = load_strategy_config(strategy)
-    audit = AuditLog(cfg.audit.sqlite_path)
+    audit = _open_audit(cfg)
 
     transition = check_transition(audit.get_stage(scfg.name), "live")
     if not transition.passed:
@@ -366,7 +413,7 @@ def paper_run(
 
     cfg = _load(config)
     scfg = load_strategy_config(strategy)
-    audit = AuditLog(cfg.audit.sqlite_path)
+    audit = _open_audit(cfg)
     stage = audit.get_stage(scfg.name)
     if stage not in ("paper", "live"):
         typer.secho(
@@ -406,7 +453,7 @@ def paper_status(
     """Show the paper track record: start date, state, and every fill."""
     cfg = _load(config)
     scfg = load_strategy_config(strategy)
-    audit = AuditLog(cfg.audit.sqlite_path)
+    audit = _open_audit(cfg)
     typer.echo(f"stage: {audit.get_stage(scfg.name)}")
     typer.echo(f"paper started: {audit.paper_started_at(scfg.name)}")
     state = audit.get_paper_state(scfg.name)
@@ -436,35 +483,34 @@ def live_run(
     Every constraint (capital cap, kill switches, spot-only) is enforced inside
     the engine; this command only wires it together.
     """
-    import os
     import time
 
-    import ccxt
-
     from quant_lab.live.engine import LiveEngine
+    from quant_lab.live.market_rules import rules_from_ccxt
+    from quant_lab.live.reconcile import reconcile_position
 
     cfg = _load(config)
     scfg = load_strategy_config(strategy)
-    audit = AuditLog(cfg.audit.sqlite_path)
+    audit = _open_audit(cfg)
+    client = _authed_client(scfg)
 
-    prefix = f"QL_{scfg.exchange.upper()}"
-    api_key = os.environ.get(f"{prefix}_API_KEY", "")
-    api_secret = os.environ.get(f"{prefix}_API_SECRET", "")
-    if not api_key or not api_secret:
-        typer.secho(
-            f"missing {prefix}_API_KEY / {prefix}_API_SECRET in environment",
-            fg=typer.colors.RED,
-            err=True,
-        )
+    # Position reconciliation is a hard precondition: the audited book must
+    # actually exist on the exchange before any order can go out.
+    report = reconcile_position(client, audit, scfg, cfg.risk.reconcile_tolerance_frac)
+    typer.echo(report.detail)
+    if not report.ok:
         raise typer.Exit(code=1)
-    client = getattr(ccxt, scfg.exchange)(
-        {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
-    )
+
+    try:
+        rules = rules_from_ccxt(client, scfg.symbol)
+    except Exception as exc:
+        typer.secho(f"could not load market rules: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
     killswitch = KillSwitchMonitor(cfg.risk.kill_switches, audit)
     alerter = alerter_from_config(cfg.alerts)
     try:
-        engine = LiveEngine(scfg, cfg, client, audit, killswitch, alerter)
+        engine = LiveEngine(scfg, cfg, client, audit, killswitch, alerter, rules=rules)
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
@@ -486,11 +532,54 @@ def live_run(
         time.sleep(interval)
 
 
+def _authed_client(scfg: StrategyInstanceConfig):  # type: ignore[no-untyped-def]
+    """ccxt client with API keys from env; exits with guidance when missing."""
+    import os
+
+    import ccxt
+
+    prefix = f"QL_{scfg.exchange.upper()}"
+    api_key = os.environ.get(f"{prefix}_API_KEY", "")
+    api_secret = os.environ.get(f"{prefix}_API_SECRET", "")
+    if not api_key or not api_secret:
+        typer.secho(
+            f"missing {prefix}_API_KEY / {prefix}_API_SECRET in environment",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return getattr(ccxt, scfg.exchange)(
+        {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
+    )
+
+
+@live_app.command("reconcile")
+def live_reconcile(
+    strategy: StrategyOpt,
+    config: ConfigOpt = DEFAULT_CONFIG,
+) -> None:
+    """Check that the audited position actually exists on the exchange.
+
+    Run this after any order error, and any time you move funds manually.
+    Non-zero exit on drift.
+    """
+    from quant_lab.live.reconcile import reconcile_position
+
+    cfg = _load(config)
+    scfg = load_strategy_config(strategy)
+    audit = _open_audit(cfg)
+    client = _authed_client(scfg)
+    report = reconcile_position(client, audit, scfg, cfg.risk.reconcile_tolerance_frac)
+    typer.echo(report.detail)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
 @risk_app.command("status")
 def risk_status(config: ConfigOpt = DEFAULT_CONFIG) -> None:
     """Show kill-switch state and configured limits."""
     cfg = _load(config)
-    audit = AuditLog(cfg.audit.sqlite_path)
+    audit = _open_audit(cfg)
     tripped, reason, ts = audit.kill_switch_state()
     ks = cfg.risk.kill_switches
     typer.echo(f"kill switch: {'TRIPPED' if tripped else 'armed (not tripped)'}")
@@ -509,7 +598,7 @@ def risk_status(config: ConfigOpt = DEFAULT_CONFIG) -> None:
 def risk_reset(config: ConfigOpt = DEFAULT_CONFIG) -> None:
     """Manually reset a tripped kill switch (the only way to re-enable trading)."""
     cfg = _load(config)
-    audit = AuditLog(cfg.audit.sqlite_path)
+    audit = _open_audit(cfg)
     tripped, reason, ts = audit.kill_switch_state()
     if not tripped:
         typer.echo("kill switch is not tripped; nothing to reset")
@@ -521,6 +610,59 @@ def risk_reset(config: ConfigOpt = DEFAULT_CONFIG) -> None:
         raise typer.Exit(code=1)
     audit.reset_kill_switch(confirmed_by="cli")
     typer.secho("kill switch reset; trading re-enabled", fg=typer.colors.GREEN)
+
+
+@audit_app.command("events")
+def audit_events(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    kind: Annotated[str | None, typer.Option(help="Filter by event kind")] = None,
+    strategy: Annotated[str | None, typer.Option(help="Filter by strategy name")] = None,
+    limit: Annotated[int, typer.Option(help="Show at most N most-recent events")] = 50,
+) -> None:
+    """Show audit events (promotions, kill-switch trips, config changes, errors...)."""
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    rows = audit.events(kind=kind, strategy=strategy)
+    for row in rows[-limit:]:
+        who = f" [{row['strategy']}]" if row["strategy"] else ""
+        typer.echo(f"{row['ts_utc']}  {row['kind']}{who}  {row['payload']}")
+    typer.echo(f"({min(limit, len(rows))} of {len(rows)} events)")
+
+
+@audit_app.command("orders")
+def audit_orders(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    strategy: Annotated[str | None, typer.Option(help="Filter by strategy name")] = None,
+    mode: Annotated[str | None, typer.Option(help="paper or live")] = None,
+    status: Annotated[str | None, typer.Option(help="filled, rejected, or error")] = None,
+) -> None:
+    """Show the order log, including rejections and errors."""
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    for row in audit.orders(strategy=strategy, mode=mode, status=status):
+        reason = f"  ({row['reason']})" if row["reason"] else ""
+        coid = f"  coid={row['client_order_id']}" if row["client_order_id"] else ""
+        typer.echo(
+            f"{row['ts_utc']}  [{row['mode']}] {row['strategy']}  {row['side']:<4} "
+            f"{row['qty']:.8f} {row['symbol']} @ {row['price']}  {row['status']}"
+            f"{reason}{coid}"
+        )
+
+
+@audit_app.command("fills")
+def audit_fills(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    strategy: Annotated[str | None, typer.Option(help="Filter by strategy name")] = None,
+    mode: Annotated[str | None, typer.Option(help="paper or live")] = None,
+) -> None:
+    """Show the fill log."""
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    for row in audit.fills(strategy=strategy, mode=mode):
+        typer.echo(
+            f"{row['ts_utc']}  [{row['mode']}] {row['strategy']}  {row['side']:<4} "
+            f"{row['qty']:.8f} {row['symbol']} @ {row['price']:.2f}  fee ${row['fee_usd']:.2f}"
+        )
 
 
 if __name__ == "__main__":
