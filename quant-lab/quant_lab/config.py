@@ -58,6 +58,18 @@ class WalkforwardConfig(_StrictModel):
     min_windows: int = Field(default=4, ge=1)
     optimize_metric: Literal["sharpe", "sortino", "profit_factor"] = "sharpe"
 
+    @model_validator(mode="after")
+    def _oos_windows_must_not_overlap(self) -> WalkforwardConfig:
+        # Overlapping OOS windows would double-count bars in the stitched
+        # record, inflating the official track. Gaps are allowed; overlap isn't.
+        if self.step_bars < self.out_of_sample_bars:
+            raise ValueError(
+                f"step_bars ({self.step_bars}) must be >= out_of_sample_bars "
+                f"({self.out_of_sample_bars}): overlapping OOS windows would "
+                "double-count the stitched record"
+            )
+        return self
+
 
 class PromotionConfig(_StrictModel):
     # ge=30 is the enforcement of the 30-trade floor: a config asking for less
