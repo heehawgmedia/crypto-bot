@@ -110,7 +110,7 @@ class AppConfig(_StrictModel):
     audit: AuditConfig = AuditConfig()
 
     @model_validator(mode="after")
-    def _live_requires_capital_cap(self) -> "AppConfig":
+    def _live_requires_capital_cap(self) -> AppConfig:
         if self.mode is Mode.LIVE and self.risk.max_capital_usd is None:
             raise ValueError(
                 "mode=live requires risk.max_capital_usd to be set explicitly; "
@@ -119,7 +119,7 @@ class AppConfig(_StrictModel):
         return self
 
     @model_validator(mode="after")
-    def _data_exchange_known(self) -> "AppConfig":
+    def _data_exchange_known(self) -> AppConfig:
         if self.data.exchange not in self.exchanges:
             raise ValueError(
                 f"data.exchange {self.data.exchange!r} is not configured under 'exchanges'"
@@ -142,7 +142,7 @@ class StrategyInstanceConfig(_StrictModel):
 def _load_yaml(path: Path) -> dict[str, Any]:
     raw = yaml.safe_load(path.read_text())
     if not isinstance(raw, dict):
-        raise ValueError(f"{path} must contain a YAML mapping, got {type(raw).__name__}")
+        raise TypeError(f"{path} must contain a YAML mapping, got {type(raw).__name__}")
     return raw
 
 

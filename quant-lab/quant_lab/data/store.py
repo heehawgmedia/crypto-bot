@@ -20,7 +20,7 @@ def _canonicalize(df: pd.DataFrame) -> pd.DataFrame:
     if list(df.columns) != OHLCV_COLUMNS:
         raise ValueError(f"expected columns {OHLCV_COLUMNS}, got {list(df.columns)}")
     if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError("expected a DatetimeIndex")
+        raise TypeError("expected a DatetimeIndex")
     if df.index.tz is None:
         raise ValueError("timestamp index must be timezone-aware UTC")
     df = df.tz_convert("UTC")

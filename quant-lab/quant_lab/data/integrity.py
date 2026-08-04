@@ -8,6 +8,7 @@ non-zero on failure so it can gate scripted pipelines.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import cast
 
 import pandas as pd
 
@@ -83,7 +84,8 @@ def check_ohlcv(df: pd.DataFrame, timeframe: str, max_gap_bars: int) -> Integrit
     if df.index.is_monotonic_increasing and not df.index.has_duplicates and len(df) > 1:
         bar_ms = timeframe_to_ms(timeframe)
         deltas_ms = df.index.to_series().diff().dropna().dt.total_seconds() * 1000
-        for ts, delta in deltas_ms[deltas_ms != bar_ms].items():
+        for ts_raw, delta in deltas_ms[deltas_ms != bar_ms].items():
+            ts = cast(pd.Timestamp, ts_raw)
             if delta % bar_ms != 0:
                 report.errors.append(
                     f"bar at {ts} is off-grid: {delta:.0f}ms since previous bar "
