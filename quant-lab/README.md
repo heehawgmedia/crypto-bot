@@ -70,6 +70,11 @@ quant-lab live run -s config/strategies/ema_cross_btc.yaml
 # Kill switches
 quant-lab risk status
 quant-lab risk reset                  # the only way to re-enable after a trip
+
+# Oversight
+quant-lab status                      # every strategy's stage + paper clock at a glance
+quant-lab live preflight -s <yaml>    # read-only go-live checklist (keys, rules, data, reconcile)
+quant-lab audit events|orders|fills   # the full audit trail
 ```
 
 Data lands in `quant-lab/data/parquet/<exchange>/<symbol>/<timeframe>.parquet`
@@ -104,7 +109,8 @@ has passed walk-forward validation and its paper period:
    Live promotion and the live engine both refuse to run without it.
 4. **Promote**: `quant-lab promote live -s <yaml>` — shows the full paper
    record and requires typing the strategy name.
-5. **Set `mode: live`** in config, then `quant-lab live run -s <yaml>`.
+5. **Set `mode: live`** in config, run `quant-lab live preflight -s <yaml>`
+   until every check passes, then `quant-lab live run -s <yaml>`.
 
 Live safety properties (all enforced in code and covered by tests):
 

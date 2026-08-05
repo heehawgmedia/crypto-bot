@@ -95,3 +95,30 @@ def test_stuck_cursor_terminates(store: ParquetStore) -> None:
     fetched = fetcher.update("BTC/USD", "1h", START, batch_limit=500)
     assert fetched == 500  # first page accepted, replayed page filtered out, loop ends
     assert exchange.calls == 2
+
+
+def test_forming_candle_never_stored(store: ParquetStore) -> None:
+    """The exchange returns the in-progress candle as its last row; only
+    closed candles (bar end <= now) may reach the store."""
+    exchange = FakeExchange(bars=50)
+    fetcher = OhlcvFetcher(exchange, store, "kraken")
+    # "now" is mid-way through the 50th candle: its bar hasn't closed yet.
+    now_ms = START_MS + 49 * BAR_MS + BAR_MS // 2
+    stored = fetcher.update("BTC/USD", "1h", START, now_ms=now_ms)
+    assert stored == 49
+    df = store.read("kraken", "BTC/USD", "1h")
+    assert len(df) == 49
+    assert df.index[-1] == START + pd.Timedelta(hours=48)
+
+    # Once the bar closes, the next update picks it up as final.
+    stored = fetcher.update("BTC/USD", "1h", START, now_ms=START_MS + 50 * BAR_MS)
+    assert stored >= 1
+    assert len(store.read("kraken", "BTC/USD", "1h")) == 50
+
+
+def test_exactly_closed_candle_is_stored(store: ParquetStore) -> None:
+    exchange = FakeExchange(bars=10)
+    fetcher = OhlcvFetcher(exchange, store, "kraken")
+    # now == exact close time of the final bar: it is closed, keep it.
+    fetcher.update("BTC/USD", "1h", START, now_ms=START_MS + 10 * BAR_MS)
+    assert len(store.read("kraken", "BTC/USD", "1h")) == 10

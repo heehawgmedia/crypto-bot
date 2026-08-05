@@ -6,7 +6,7 @@ The exchange client is injected so tests can drive the fetcher with a fake.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, cast
 
 import pandas as pd
 
@@ -67,13 +67,26 @@ class OhlcvFetcher:
         return rows_to_frame(all_rows)
 
     def update(
-        self, symbol: str, timeframe: str, start: pd.Timestamp, batch_limit: int = 500
+        self,
+        symbol: str,
+        timeframe: str,
+        start: pd.Timestamp,
+        batch_limit: int = 500,
+        now_ms: int | None = None,
     ) -> int:
-        """Incrementally extend the store; returns the number of rows fetched.
+        """Incrementally extend the store; returns the number of rows stored.
 
         Resumes from the last stored bar (minus a small refresh window so a
-        candle stored while still forming gets overwritten with final values).
+        candle refetched at the boundary gets overwritten with final values).
+
+        Only CLOSED candles are ever stored: exchanges return the currently
+        forming candle as their last row, and a forming candle repaints —
+        letting it into the store would contaminate backtests and make live
+        signals differ from what the backtest saw. A bar is closed once its
+        end (open time + bar length) is at or before ``now``.
         """
+        import time
+
         bar_ms = timeframe_to_ms(timeframe)
         last = self._store.last_timestamp(self._exchange, symbol, timeframe)
         if last is None:
@@ -82,6 +95,14 @@ class OhlcvFetcher:
             since_ms = int(last.value // 1_000_000) - (_REFRESH_BARS - 1) * bar_ms
 
         df = self.fetch_range(symbol, timeframe, since_ms, batch_limit=batch_limit)
+        if df.empty:
+            return 0
+        if now_ms is None:
+            now_ms = int(time.time() * 1000)
+        # Resolution-independent epoch-ms (index may be datetime64[ms] or [ns]).
+        index = cast(pd.DatetimeIndex, df.index)
+        open_ms = (index - pd.Timestamp(0, tz="UTC")) // pd.Timedelta(milliseconds=1)
+        df = df[open_ms + bar_ms <= now_ms]
         if df.empty:
             return 0
         self._store.write(self._exchange, symbol, timeframe, df)

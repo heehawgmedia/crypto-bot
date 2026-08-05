@@ -289,16 +289,26 @@ def validate_run(
     typer.echo("")
     audit = _open_audit(cfg)
     if decision.passed:
-        transition = check_transition(audit.get_stage(scfg.name), "validated")
-        if not transition.passed:
-            typer.secho(transition.summary(), fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=1)
-        audit.set_stage(
-            scfg.name,
-            "validated",
-            {"windows": len(wf.windows), "closed_oos_trades": len(wf.closed_oos_trades)},
-        )
-        typer.secho(f"gate: PASS — {scfg.name} promoted to 'validated'", fg=typer.colors.GREEN)
+        current = audit.get_stage(scfg.name)
+        if current == "candidate":
+            audit.set_stage(
+                scfg.name,
+                "validated",
+                {"windows": len(wf.windows), "closed_oos_trades": len(wf.closed_oos_trades)},
+            )
+            typer.secho(
+                f"gate: PASS — {scfg.name} promoted to 'validated'", fg=typer.colors.GREEN
+            )
+        else:
+            # Re-validation of an already-promoted strategy: report, don't move.
+            audit.record(
+                "revalidation_pass",
+                {"windows": len(wf.windows), "closed_oos_trades": len(wf.closed_oos_trades)},
+                strategy=scfg.name,
+            )
+            typer.secho(
+                f"gate: PASS — {scfg.name} remains at stage {current!r}", fg=typer.colors.GREEN
+            )
     else:
         audit.record(
             "validation_rejected", {"reasons": decision.reasons}, strategy=scfg.name
@@ -391,14 +401,15 @@ def promote_live(
 def _refresh_and_read(
     cfg: AppConfig, scfg: StrategyInstanceConfig
 ) -> pd.DataFrame:
-    """Fetch the newest bars for the strategy's market and return the frame,
-    dropping the still-forming candle so signals only ever see closed bars."""
+    """Fetch the newest bars for the strategy's market and return the frame.
+
+    The fetcher stores only closed candles, so the last row is always a
+    completed bar — safe to compute signals on."""
     client = make_ccxt_client(scfg.exchange, cfg.exchanges[scfg.exchange].rate_limit_ms)
     store = ParquetStore(cfg.data.parquet_dir)
     fetcher = OhlcvFetcher(client, store, scfg.exchange)
     fetcher.update(scfg.symbol, scfg.timeframe, pd.Timestamp(cfg.data.start_date, tz="UTC"))
-    df = store.read(scfg.exchange, scfg.symbol, scfg.timeframe)
-    return df.iloc[:-1] if len(df) else df
+    return store.read(scfg.exchange, scfg.symbol, scfg.timeframe)
 
 
 @paper_app.command("run")
@@ -610,6 +621,124 @@ def risk_reset(config: ConfigOpt = DEFAULT_CONFIG) -> None:
         raise typer.Exit(code=1)
     audit.reset_kill_switch(confirmed_by="cli")
     typer.secho("kill switch reset; trading re-enabled", fg=typer.colors.GREEN)
+
+
+@app.command("status")
+def status(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    strategies_dir: Annotated[
+        Path, typer.Option(help="Directory of strategy YAMLs")
+    ] = Path("config/strategies"),
+) -> None:
+    """Pipeline overview: every strategy's stage, paper clock, and fills."""
+    from datetime import UTC, datetime
+
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    tripped, reason, _ = audit.kill_switch_state()
+    typer.echo(f"mode: {cfg.mode.value}")
+    cap = cfg.risk.max_capital_usd
+    typer.echo(f"capital cap: {'NOT SET' if cap is None else f'${cap:,.2f}'}")
+    typer.echo(f"kill switch: {'TRIPPED — ' + str(reason) if tripped else 'armed'}")
+    typer.echo("")
+
+    yamls = sorted(strategies_dir.glob("*.yaml")) if strategies_dir.is_dir() else []
+    if not yamls:
+        typer.echo(f"(no strategy YAMLs found in {strategies_dir})")
+        return
+    for path in yamls:
+        try:
+            scfg = load_strategy_config(path)
+        except Exception as exc:  # noqa: BLE001 - preflight reports, never crashes
+            typer.secho(f"{path.name}: invalid ({exc})", fg=typer.colors.RED)
+            continue
+        stage = audit.get_stage(scfg.name)
+        line = (
+            f"{scfg.name:<24} {stage:<10} {scfg.strategy} on "
+            f"{scfg.exchange} {scfg.symbol} {scfg.timeframe}"
+        )
+        started = audit.paper_started_at(scfg.name)
+        if started is not None and stage in ("paper", "live"):
+            days = (datetime.now(UTC) - started).total_seconds() / 86_400
+            fills = len(audit.fills(strategy=scfg.name, mode="paper"))
+            line += f"  | paper {days:.1f}/{cfg.promotion.min_paper_days}d, {fills} fills"
+        typer.echo(line)
+
+
+@live_app.command("preflight")
+def live_preflight(
+    strategy: StrategyOpt,
+    config: ConfigOpt = DEFAULT_CONFIG,
+) -> None:
+    """Read-only go-live checklist. Places NO orders.
+
+    Verifies: config mode + capital cap, strategy stage, kill switch, API key
+    connectivity, market rules for the symbol, data freshness, and position
+    reconciliation. Non-zero exit if anything blocks going live.
+    """
+    from quant_lab.live.market_rules import rules_from_ccxt
+    from quant_lab.live.reconcile import reconcile_position
+
+    cfg = _load(config)
+    scfg = load_strategy_config(strategy)
+    audit = _open_audit(cfg)
+    ok = True
+
+    def check(label: str, passed: bool, detail: str) -> None:
+        nonlocal ok
+        ok = ok and passed
+        mark = typer.style("PASS", fg=typer.colors.GREEN) if passed else typer.style(
+            "FAIL", fg=typer.colors.RED
+        )
+        typer.echo(f"[{mark}] {label}: {detail}")
+
+    check("mode", cfg.mode.value == "live", f"config mode is {cfg.mode.value!r}")
+    cap = cfg.risk.max_capital_usd
+    check("capital cap", cap is not None, "NOT SET" if cap is None else f"${cap:,.2f}")
+    stage = audit.get_stage(scfg.name)
+    check("stage", stage == "live", f"{scfg.name} is at stage {stage!r}")
+    tripped, reason, _ = audit.kill_switch_state()
+    check("kill switch", not tripped, str(reason) if tripped else "armed, not tripped")
+
+    store = ParquetStore(cfg.data.parquet_dir)
+    df = store.read(scfg.exchange, scfg.symbol, scfg.timeframe)
+    if df.empty:
+        check("data", False, "no stored history — run `quant-lab data update`")
+    else:
+        report = check_ohlcv(df, scfg.timeframe, cfg.data.max_gap_bars)
+        check("data", report.ok, f"{len(df)} bars, last {df.index[-1]}")
+
+    try:
+        client = _authed_client(scfg)
+        balance_ok = True
+        try:
+            client.fetch_balance()
+        except Exception as exc:  # noqa: BLE001 - preflight reports, never crashes
+            balance_ok = False
+            check("api keys", False, f"balance query failed: {exc}")
+        if balance_ok:
+            check("api keys", True, "balance query succeeded")
+            try:
+                rules = rules_from_ccxt(client, scfg.symbol)
+                check(
+                    "market rules",
+                    True,
+                    f"min {rules.amount_min}, step {rules.amount_step}, "
+                    f"min notional {rules.cost_min}",
+                )
+            except Exception as exc:  # noqa: BLE001 - preflight reports, never crashes
+                check("market rules", False, str(exc))
+            rec = reconcile_position(client, audit, scfg, cfg.risk.reconcile_tolerance_frac)
+            check("reconcile", rec.ok, rec.detail)
+    except typer.Exit:
+        check("api keys", False, "QL_*_API_KEY / QL_*_API_SECRET not set")
+
+    typer.echo("")
+    if ok:
+        typer.secho("preflight PASS — ready for `quant-lab live run`", fg=typer.colors.GREEN)
+    else:
+        typer.secho("preflight FAIL — resolve the failures above", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
 
 
 @audit_app.command("events")

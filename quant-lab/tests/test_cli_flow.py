@@ -156,3 +156,30 @@ def test_audit_events_shows_promotions(workspace: Path) -> None:
     result = runner.invoke(app, ["audit", "events"])
     assert result.exit_code == 0
     assert "config_registered" in result.output
+
+
+def test_revalidation_is_idempotent(workspace: Path) -> None:
+    first = runner.invoke(app, ["validate", "run", "-s", "config/strategies/s.yaml"])
+    assert first.exit_code == 0, first.output
+    again = runner.invoke(app, ["validate", "run", "-s", "config/strategies/s.yaml"])
+    assert again.exit_code == 0, again.output
+    assert "remains at stage 'validated'" in again.output
+
+
+def test_status_overview(workspace: Path) -> None:
+    runner.invoke(app, ["validate", "run", "-s", "config/strategies/s.yaml"])
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "cli_flow_test" in result.output
+    assert "validated" in result.output
+    assert "kill switch: armed" in result.output
+
+
+def test_preflight_fails_safe_without_live_setup(workspace: Path) -> None:
+    """Preflight on an unpromoted strategy with no keys must FAIL, not pass."""
+    result = runner.invoke(
+        app, ["live", "preflight", "-s", "config/strategies/s.yaml"]
+    )
+    assert result.exit_code == 1
+    assert "preflight FAIL" in result.output
+    assert "stage" in result.output
