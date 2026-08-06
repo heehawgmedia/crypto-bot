@@ -17,21 +17,44 @@ very end, for live trading.
 
 ## 2. Get the code and install
 
-```bash
+**Important:** quant-lab lives on the `claude/quant-lab-crypto-trading-lb6wmx`
+branch — a fresh clone lands on `master`, which does NOT contain it. The
+checkout step below is required.
+
+**Windows (PowerShell):**
+
+```powershell
 git clone https://github.com/heehawgmedia/crypto-bot.git
-cd crypto-bot/quant-lab
-
-# Mac/Linux:
-python3 -m venv .venv && source .venv/bin/activate
-# Windows (PowerShell):
-#   py -3.11 -m venv .venv ; .venv\Scripts\Activate.ps1
-
+cd crypto-bot
+git checkout claude/quant-lab-crypto-trading-lb6wmx
+cd quant-lab
+py -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 pytest          # optional but recommended: ~200 tests should all pass
 ```
 
+If `Activate.ps1` is blocked by an execution-policy error, run
+`Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
+once, answer `Y`, and retry. (Tip: cloning somewhere outside OneDrive, e.g.
+`C:\bots\`, avoids OneDrive constantly syncing market data files.)
+
+**Mac/Linux:**
+
+```bash
+git clone https://github.com/heehawgmedia/crypto-bot.git
+cd crypto-bot
+git checkout claude/quant-lab-crypto-trading-lb6wmx
+cd quant-lab
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
 From here on, run everything from the `crypto-bot/quant-lab` folder with the
-venv activated (you'll see `(.venv)` in your prompt).
+venv activated (you'll see `(.venv)` in your prompt). In every NEW terminal,
+re-activate first: `.venv\Scripts\Activate.ps1` (Windows) or
+`source .venv/bin/activate` (Mac/Linux).
 
 ## 3. Download market data — one command
 
