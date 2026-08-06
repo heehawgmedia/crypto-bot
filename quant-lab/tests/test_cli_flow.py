@@ -216,11 +216,24 @@ def test_data_exchange_split_reads_history_from_data_source(workspace: Path) -> 
     assert "[IN-SAMPLE]" in result.output
 
 
-def test_setup_offline_keeps_existing_data_and_guides(workspace: Path) -> None:
+def test_setup_offline_keeps_existing_data_and_guides(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`quant-lab setup` with no network must not destroy anything: it warns
-    about failed fetches, verifies the stored data, and prints next steps."""
+    about failed fetches, verifies the stored data, and prints next steps.
+
+    The network is stubbed out — this test must behave identically on and
+    offline (it once fetched real Kraken candles when run on a machine with
+    internet, which is exactly the kind of non-hermetic test this suite
+    exists to prevent).
+    """
+
+    def no_network(self: object, *args: object, **kwargs: object) -> int:
+        raise ConnectionError("offline (stubbed for test)")
+
+    monkeypatch.setattr("quant_lab.cli.OhlcvFetcher.update", no_network)
     result = runner.invoke(app, ["setup"])
-    assert "fetch failed" in result.output or "downloading" in result.output
+    assert "fetch failed" in result.output
     # Data was pre-seeded by the workspace fixture and must still verify.
     assert "BTC/USD 1h: rows=2500" in result.output
     assert "validate run" in result.output
