@@ -43,7 +43,7 @@ def test_initial_fetch_pages_through_history(store: ParquetStore) -> None:
     fetcher = OhlcvFetcher(exchange, store, "kraken")
     fetched = fetcher.update("BTC/USD", "1h", START, batch_limit=500)
     assert fetched == 1200
-    assert exchange.calls == 3  # 500 + 500 + 200
+    assert exchange.calls == 4  # 500 + 500 + 200 + empty page ends the walk
     df = store.read("kraken", "BTC/USD", "1h")
     assert len(df) == 1200
     assert df.index[0] == START
@@ -122,3 +122,29 @@ def test_exactly_closed_candle_is_stored(store: ParquetStore) -> None:
     # now == exact close time of the final bar: it is closed, keep it.
     fetcher.update("BTC/USD", "1h", START, now_ms=START_MS + 10 * BAR_MS)
     assert len(store.read("kraken", "BTC/USD", "1h")) == 10
+
+
+def test_pagination_survives_exchange_page_caps(store: ParquetStore) -> None:
+    """coinbase caps pages at 300 candles regardless of the requested limit —
+    a short page must NOT end the walk (this bug once stopped a 60k-bar
+    download after a single page)."""
+
+    class CappedExchange(FakeExchange):
+        PAGE_CAP = 300
+
+        def fetch_ohlcv(
+            self, symbol: str, timeframe: str, since: int | None, limit: int
+        ) -> list[list[float]]:
+            self.calls += 1
+            assert since is not None
+            eligible = [r for r in self.rows if r[0] >= since]
+            return eligible[: self.PAGE_CAP]  # ignores the requested limit
+
+    exchange = CappedExchange(bars=1000)
+    fetcher = OhlcvFetcher(exchange, store, "coinbase")
+    stored = fetcher.update("BTC/USD", "1h", START, batch_limit=500)
+    assert stored == 1000
+    assert exchange.calls == 5  # 300+300+300+100, then an empty page ends it
+    df = store.read("coinbase", "BTC/USD", "1h")
+    assert len(df) == 1000
+    assert df.index.is_monotonic_increasing

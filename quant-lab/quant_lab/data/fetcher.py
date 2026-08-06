@@ -46,9 +46,15 @@ class OhlcvFetcher:
         self._exchange = exchange
 
     def fetch_range(
-        self, symbol: str, timeframe: str, since_ms: int, batch_limit: int = 500
+        self, symbol: str, timeframe: str, since_ms: int, batch_limit: int = 300
     ) -> pd.DataFrame:
-        """Page through fetch_ohlcv from ``since_ms`` until the exchange runs dry."""
+        """Page through fetch_ohlcv from ``since_ms`` until the exchange runs dry.
+
+        Termination is driven purely by cursor progress, never by page size:
+        exchanges cap pages at different sizes (coinbase returns at most 300
+        candles regardless of the requested limit), so a short page means
+        nothing — only an empty or non-advancing page ends the walk.
+        """
         bar_ms = timeframe_to_ms(timeframe)
         all_rows: list[list[float]] = []
         cursor = since_ms
@@ -61,9 +67,10 @@ class OhlcvFetcher:
             if not rows:
                 break
             all_rows.extend(rows)
-            cursor = int(rows[-1][0]) + bar_ms
-            if len(rows) < batch_limit:
+            new_cursor = int(rows[-1][0]) + bar_ms
+            if new_cursor <= cursor:
                 break
+            cursor = new_cursor
         return rows_to_frame(all_rows)
 
     def update(
@@ -71,7 +78,7 @@ class OhlcvFetcher:
         symbol: str,
         timeframe: str,
         start: pd.Timestamp,
-        batch_limit: int = 500,
+        batch_limit: int = 300,
         now_ms: int | None = None,
     ) -> int:
         """Incrementally extend the store; returns the number of rows stored.

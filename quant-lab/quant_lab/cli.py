@@ -84,7 +84,12 @@ def update(
     symbol: Annotated[str | None, typer.Option(help="Limit to one symbol")] = None,
     timeframe: Annotated[str | None, typer.Option(help="Limit to one timeframe")] = None,
 ) -> None:
-    """Fetch new OHLCV bars for configured symbols/timeframes (incremental)."""
+    """Fetch new OHLCV bars for configured symbols/timeframes (incremental).
+
+    Timeframes the exchange can't serve are derived locally from a finer
+    configured timeframe (e.g. 4h from 1h)."""
+    from quant_lab.data.resample import derive_timeframe, pick_source
+
     cfg = _load(config)
     exchange = cfg.data.exchange
     client = make_ccxt_client(exchange, cfg.exchanges[exchange].rate_limit_ms)
@@ -93,9 +98,25 @@ def update(
     start = pd.Timestamp(cfg.data.start_date, tz="UTC")
 
     for sym, tf in _targets(cfg, symbol, timeframe):
-        fetched = fetcher.update(sym, tf, start)
-        total = len(store.read(exchange, sym, tf))
-        typer.echo(f"{exchange} {sym} {tf}: fetched {fetched} bars, {total} stored")
+        try:
+            fetched = fetcher.update(sym, tf, start)
+            total = len(store.read(exchange, sym, tf))
+            typer.echo(f"{exchange} {sym} {tf}: fetched {fetched} bars, {total} stored")
+        except Exception as exc:  # noqa: BLE001 - fall back to local derivation
+            src = pick_source(cfg.data.timeframes, tf)
+            if src is not None and not store.read(exchange, sym, src).empty:
+                n = derive_timeframe(store, exchange, sym, src, tf)
+                total = len(store.read(exchange, sym, tf))
+                typer.echo(
+                    f"{exchange} {sym} {tf}: derived {n} bars from {src} "
+                    f"(exchange fetch failed), {total} stored"
+                )
+            else:
+                typer.secho(
+                    f"{exchange} {sym} {tf}: fetch failed ({exc})",
+                    fg=typer.colors.YELLOW,
+                    err=True,
+                )
 
 
 @data_app.command()
@@ -417,11 +438,20 @@ def _refresh_and_read(
 
     The fetcher stores only closed candles, so the last row is always a
     completed bar — safe to compute signals on."""
+    from quant_lab.data.resample import derive_timeframe, pick_source
+
     source = scfg.data_source
     client = make_ccxt_client(source, cfg.exchanges[source].rate_limit_ms)
     store = ParquetStore(cfg.data.parquet_dir)
     fetcher = OhlcvFetcher(client, store, source)
-    fetcher.update(scfg.symbol, scfg.timeframe, pd.Timestamp(cfg.data.start_date, tz="UTC"))
+    start = pd.Timestamp(cfg.data.start_date, tz="UTC")
+    try:
+        fetcher.update(scfg.symbol, scfg.timeframe, start)
+    except Exception:  # noqa: BLE001 - timeframe unsupported: derive from finer bars
+        src = pick_source(cfg.data.timeframes, scfg.timeframe)
+        if src is not None:
+            fetcher.update(scfg.symbol, src, start)
+            derive_timeframe(store, source, scfg.symbol, src, scfg.timeframe)
     return store.read(source, scfg.symbol, scfg.timeframe)
 
 
@@ -456,14 +486,19 @@ def paper_run(
         scfg, cost, audit, cfg.backtest.initial_capital_usd, alerter_from_config(cfg.alerts)
     )
     while True:
-        df = _refresh_and_read(cfg, scfg)
-        if df.empty:
-            typer.secho("no data returned from exchange", fg=typer.colors.YELLOW)
-        else:
-            step = engine.step(df)
-            typer.echo(
-                f"{step.bar_time}  equity ${step.equity_usd:,.2f}  {step.detail}"
-            )
+        try:
+            df = _refresh_and_read(cfg, scfg)
+            if df.empty:
+                typer.secho("no data returned from exchange", fg=typer.colors.YELLOW)
+            else:
+                step = engine.step(df)
+                typer.echo(
+                    f"{step.bar_time}  equity ${step.equity_usd:,.2f}  {step.detail}"
+                )
+        except Exception as exc:
+            if once:
+                raise
+            typer.secho(f"poll failed, retrying in {interval}s: {exc}", fg=typer.colors.YELLOW)
         if once:
             break
         time.sleep(interval)
@@ -545,12 +580,17 @@ def live_run(
         fg=typer.colors.YELLOW,
     )
     while True:
-        df = _refresh_and_read(cfg, scfg)
-        if df.empty:
-            typer.secho("no data returned from exchange", fg=typer.colors.YELLOW)
-        else:
-            step = engine.step(df)
-            typer.echo(f"{df.index[-1]}  {step.detail}")
+        try:
+            df = _refresh_and_read(cfg, scfg)
+            if df.empty:
+                typer.secho("no data returned from exchange", fg=typer.colors.YELLOW)
+            else:
+                step = engine.step(df)
+                typer.echo(f"{df.index[-1]}  {step.detail}")
+        except Exception as exc:
+            if once:
+                raise
+            typer.secho(f"poll failed, retrying in {interval}s: {exc}", fg=typer.colors.YELLOW)
         if once:
             break
         time.sleep(interval)
@@ -653,19 +693,36 @@ def setup(config: ConfigOpt = DEFAULT_CONFIG) -> None:
     typer.secho(f"[1/3] downloading OHLCV history from {exchange}...", bold=True)
     client = make_ccxt_client(exchange, cfg.exchanges[exchange].rate_limit_ms)
     fetcher = OhlcvFetcher(client, store, exchange)
-    fetch_failures = 0
+    failed: list[tuple[str, str]] = []
     for sym, tf in targets:
         try:
             fetched = fetcher.update(sym, tf, start)
             total = len(store.read(exchange, sym, tf))
             typer.echo(f"  {sym} {tf}: +{fetched} bars ({total} total)")
         except Exception as exc:  # noqa: BLE001 - setup reports and continues
-            fetch_failures += 1
+            failed.append((sym, tf))
             typer.secho(f"  {sym} {tf}: fetch failed ({exc})", fg=typer.colors.YELLOW)
-    if fetch_failures:
+
+    # Timeframes the exchange can't serve (e.g. coinbase has no 4h) are built
+    # locally from a finer stored timeframe.
+    from quant_lab.data.resample import derive_timeframe, pick_source
+
+    derive_targets = [t for t in failed] + [
+        (sym, tf) for sym, tf in targets
+        if (sym, tf) not in failed and store.read(exchange, sym, tf).empty
+    ]
+    still_failed = 0
+    for sym, tf in derive_targets:
+        src = pick_source(cfg.data.timeframes, tf)
+        if src is not None and not store.read(exchange, sym, src).empty:
+            n = derive_timeframe(store, exchange, sym, src, tf)
+            typer.echo(f"  {sym} {tf}: derived {n} bars locally from {src} data")
+        else:
+            still_failed += 1
+    if still_failed:
         typer.secho(
-            f"  {fetch_failures} fetch(es) failed — check your internet connection "
-            "and re-run `quant-lab setup`; already-stored data is kept.",
+            f"  {still_failed} dataset(s) unavailable — check your internet "
+            "connection and re-run `quant-lab setup`; already-stored data is kept.",
             fg=typer.colors.YELLOW,
         )
 
