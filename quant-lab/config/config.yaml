@@ -12,7 +12,10 @@ exchanges:
   # API keys are NEVER stored here — environment variables only (see .env.example)
 
 data:
-  exchange: kraken
+  # History is fetched from coinbase: its API paginates the full history,
+  # while Kraken's only serves the most recent ~720 candles. Trading still
+  # happens on kraken (see the strategy YAMLs) with kraken's fees.
+  exchange: coinbase
   symbols: [BTC/USD, ETH/USD]
   timeframes: [1h, 4h, 1d]
   start_date: "2019-01-01"

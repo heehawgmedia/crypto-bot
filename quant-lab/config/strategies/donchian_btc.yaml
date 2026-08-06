@@ -1,6 +1,7 @@
 name: donchian_btc_4h
 strategy: donchian
-exchange: kraken
+exchange: kraken          # orders execute here (kraken fees apply)
+data_exchange: coinbase   # deep OHLCV history comes from here
 symbol: BTC/USD
 timeframe: 4h
 params:

@@ -1,6 +1,7 @@
 name: ema_cross_btc_1h
 strategy: ema_cross
-exchange: kraken
+exchange: kraken          # orders execute here (kraken fees apply)
+data_exchange: coinbase   # deep OHLCV history comes from here
 symbol: BTC/USD
 timeframe: 1h
 params:

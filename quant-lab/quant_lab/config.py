@@ -154,11 +154,19 @@ class StrategyInstanceConfig(_StrictModel):
 
     name: str = Field(min_length=1)
     strategy: str
-    exchange: str
+    exchange: str  # where orders execute (fees + live client)
     symbol: str
     timeframe: str
     params: dict[str, Any]
     param_grid: dict[str, list[Any]] = Field(default_factory=dict)
+    # Where OHLCV history comes from (default: the trading exchange).
+    # Kraken's API only serves ~720 candles, so deep history is typically
+    # sourced from coinbase while still trading on kraken.
+    data_exchange: str | None = None
+
+    @property
+    def data_source(self) -> str:
+        return self.data_exchange or self.exchange
     # Optional trade rules, applied identically in backtest, walk-forward,
     # paper, and live (see quant_lab.risk.stops).
     stop_loss_pct: float | None = Field(default=None, gt=0, lt=100)

@@ -1,6 +1,7 @@
 name: rsi_mr_btc_1h
 strategy: rsi_mr
-exchange: kraken
+exchange: kraken          # orders execute here (kraken fees apply)
+data_exchange: coinbase   # deep OHLCV history comes from here
 symbol: BTC/USD
 timeframe: 1h
 params:

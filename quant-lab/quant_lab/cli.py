@@ -177,14 +177,15 @@ def _load_strategy_inputs(
     cfg: AppConfig, strategy_path: Path
 ) -> tuple[StrategyInstanceConfig, pd.DataFrame, CostModel]:
     scfg = load_strategy_config(strategy_path)
-    if scfg.exchange not in cfg.exchanges:
-        typer.secho(f"exchange {scfg.exchange!r} not configured", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2)
+    for exch in {scfg.exchange, scfg.data_source}:
+        if exch not in cfg.exchanges:
+            typer.secho(f"exchange {exch!r} not configured", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
     store = ParquetStore(cfg.data.parquet_dir)
-    df = store.read(scfg.exchange, scfg.symbol, scfg.timeframe)
+    df = store.read(scfg.data_source, scfg.symbol, scfg.timeframe)
     if df.empty:
         typer.secho(
-            f"no stored data for {scfg.exchange} {scfg.symbol} {scfg.timeframe}; "
+            f"no stored data for {scfg.data_source} {scfg.symbol} {scfg.timeframe}; "
             "run `quant-lab data update` first",
             fg=typer.colors.RED,
             err=True,
@@ -416,11 +417,12 @@ def _refresh_and_read(
 
     The fetcher stores only closed candles, so the last row is always a
     completed bar — safe to compute signals on."""
-    client = make_ccxt_client(scfg.exchange, cfg.exchanges[scfg.exchange].rate_limit_ms)
+    source = scfg.data_source
+    client = make_ccxt_client(source, cfg.exchanges[source].rate_limit_ms)
     store = ParquetStore(cfg.data.parquet_dir)
-    fetcher = OhlcvFetcher(client, store, scfg.exchange)
+    fetcher = OhlcvFetcher(client, store, source)
     fetcher.update(scfg.symbol, scfg.timeframe, pd.Timestamp(cfg.data.start_date, tz="UTC"))
-    return store.read(scfg.exchange, scfg.symbol, scfg.timeframe)
+    return store.read(source, scfg.symbol, scfg.timeframe)
 
 
 @paper_app.command("run")
@@ -634,6 +636,74 @@ def risk_reset(config: ConfigOpt = DEFAULT_CONFIG) -> None:
     typer.secho("kill switch reset; trading re-enabled", fg=typer.colors.GREEN)
 
 
+@app.command("setup")
+def setup(config: ConfigOpt = DEFAULT_CONFIG) -> None:
+    """One-shot bootstrap: download history, verify it, and print what's next.
+
+    Safe to re-run any time — data updates are incremental and nothing here
+    trades or needs API keys.
+    """
+    cfg = _load(config)
+    _open_audit(cfg)
+    exchange = cfg.data.exchange
+    store = ParquetStore(cfg.data.parquet_dir)
+    start = pd.Timestamp(cfg.data.start_date, tz="UTC")
+    targets = _targets(cfg, None, None)
+
+    typer.secho(f"[1/3] downloading OHLCV history from {exchange}...", bold=True)
+    client = make_ccxt_client(exchange, cfg.exchanges[exchange].rate_limit_ms)
+    fetcher = OhlcvFetcher(client, store, exchange)
+    fetch_failures = 0
+    for sym, tf in targets:
+        try:
+            fetched = fetcher.update(sym, tf, start)
+            total = len(store.read(exchange, sym, tf))
+            typer.echo(f"  {sym} {tf}: +{fetched} bars ({total} total)")
+        except Exception as exc:  # noqa: BLE001 - setup reports and continues
+            fetch_failures += 1
+            typer.secho(f"  {sym} {tf}: fetch failed ({exc})", fg=typer.colors.YELLOW)
+    if fetch_failures:
+        typer.secho(
+            f"  {fetch_failures} fetch(es) failed — check your internet connection "
+            "and re-run `quant-lab setup`; already-stored data is kept.",
+            fg=typer.colors.YELLOW,
+        )
+
+    typer.secho("[2/3] verifying data integrity...", bold=True)
+    have_data = False
+    all_ok = True
+    for sym, tf in targets:
+        df = store.read(exchange, sym, tf)
+        if df.empty:
+            typer.echo(f"  {sym} {tf}: no data")
+            all_ok = False
+            continue
+        have_data = True
+        report = check_ohlcv(df, tf, cfg.data.max_gap_bars)
+        typer.echo(f"  {sym} {tf}: {report.summary().splitlines()[0]}")
+        all_ok = all_ok and report.ok
+
+    typer.secho("[3/3] next steps", bold=True)
+    strategies_dir = Path("config/strategies")
+    yamls = sorted(strategies_dir.glob("*.yaml")) if strategies_dir.is_dir() else []
+    if not have_data:
+        typer.secho(
+            "no data yet — get online and re-run `quant-lab setup`", fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1)
+    typer.echo("  validate a strategy (the only path toward live trading):")
+    for path in yamls:
+        typer.echo(f"    quant-lab validate run -s {path}")
+    typer.echo("  then: quant-lab promote paper -s <yaml>  ->  quant-lab paper run -s <yaml>")
+    typer.echo("  check progress any time with: quant-lab status")
+    if not all_ok:
+        typer.secho(
+            "note: some datasets have integrity issues (see [2/3]); validation "
+            "refuses bad data, so re-run setup or investigate before validating.",
+            fg=typer.colors.YELLOW,
+        )
+
+
 @app.command("status")
 def status(
     config: ConfigOpt = DEFAULT_CONFIG,
@@ -712,7 +782,7 @@ def live_preflight(
     check("kill switch", not tripped, str(reason) if tripped else "armed, not tripped")
 
     store = ParquetStore(cfg.data.parquet_dir)
-    df = store.read(scfg.exchange, scfg.symbol, scfg.timeframe)
+    df = store.read(scfg.data_source, scfg.symbol, scfg.timeframe)
     if df.empty:
         check("data", False, "no stored history — run `quant-lab data update`")
     else:

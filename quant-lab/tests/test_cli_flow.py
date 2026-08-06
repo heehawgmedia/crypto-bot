@@ -192,3 +192,35 @@ def test_audit_export_csv(workspace: Path) -> None:
     assert result.exit_code == 0, result.output
     content = (workspace / "fills.csv").read_text()
     assert content.startswith("ts_utc,mode,strategy,symbol,side,qty,price,fee_usd")
+
+
+DUAL_EXCHANGE_CONFIG = CONFIG.replace(
+    "exchanges:\n  kraken: {taker_fee_bps: 26, maker_fee_bps: 16}",
+    "exchanges:\n  kraken: {taker_fee_bps: 26, maker_fee_bps: 16}\n"
+    "  coinbase: {taker_fee_bps: 60, maker_fee_bps: 40}",
+).replace("exchange: kraken", "exchange: coinbase")  # data.exchange only
+
+
+def test_data_exchange_split_reads_history_from_data_source(workspace: Path) -> None:
+    """Strategy trades on kraken but reads coinbase history via data_exchange."""
+    (workspace / "config" / "config.yaml").write_text(DUAL_EXCHANGE_CONFIG)
+    (workspace / "config" / "strategies" / "s.yaml").write_text(
+        STRATEGY + "data_exchange: coinbase\n"
+    )
+    # History exists ONLY under coinbase; the kraken store is empty.
+    store = ParquetStore(workspace / "data" / "parquet")
+    store.write("coinbase", "BTC/USD", "1h", make_ohlcv(start="2023-01-01", bars=2500, seed=7))
+
+    result = runner.invoke(app, ["backtest", "run", "-s", "config/strategies/s.yaml"])
+    assert result.exit_code == 0, result.output
+    assert "[IN-SAMPLE]" in result.output
+
+
+def test_setup_offline_keeps_existing_data_and_guides(workspace: Path) -> None:
+    """`quant-lab setup` with no network must not destroy anything: it warns
+    about failed fetches, verifies the stored data, and prints next steps."""
+    result = runner.invoke(app, ["setup"])
+    assert "fetch failed" in result.output or "downloading" in result.output
+    # Data was pre-seeded by the workspace fixture and must still verify.
+    assert "BTC/USD 1h: rows=2500" in result.output
+    assert "validate run" in result.output
