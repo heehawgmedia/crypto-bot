@@ -212,11 +212,19 @@ def backtest_run(
     This is a research tool: results here are IN-SAMPLE and are never a
     promotion criterion. Walk-forward OOS results are the official record.
     """
+    from quant_lab.risk.stops import TradeRules
+
     cfg = _load(config)
     scfg, df, cost = _load_strategy_inputs(cfg, strategy)
     strat = build_strategy(scfg.strategy, scfg.params)
 
-    result = run_backtest(df, strat.signals(df), cost, cfg.backtest.initial_capital_usd)
+    result = run_backtest(
+        df,
+        strat.signals(df),
+        cost,
+        cfg.backtest.initial_capital_usd,
+        rules=TradeRules.from_strategy(scfg),
+    )
     bench = buy_and_hold(df, cost, cfg.backtest.initial_capital_usd)
     sheet = render_tearsheet(
         f"[IN-SAMPLE] {scfg.name} ({scfg.strategy} on {scfg.exchange} "
@@ -246,6 +254,8 @@ def validate_run(
     cfg = _load(config)
     scfg, df, cost = _load_strategy_inputs(cfg, strategy)
 
+    from quant_lab.risk.stops import TradeRules
+
     try:
         wf = run_walkforward(
             df,
@@ -256,6 +266,7 @@ def validate_run(
             cost,
             cfg.backtest.initial_capital_usd,
             scfg.timeframe,
+            rules=TradeRules.from_strategy(scfg),
         )
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
@@ -776,6 +787,35 @@ def audit_orders(
             f"{row['qty']:.8f} {row['symbol']} @ {row['price']}  {row['status']}"
             f"{reason}{coid}"
         )
+
+
+@audit_app.command("export")
+def audit_export(
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CSV path")],
+    config: ConfigOpt = DEFAULT_CONFIG,
+    strategy: Annotated[str | None, typer.Option(help="Filter by strategy name")] = None,
+    mode: Annotated[str | None, typer.Option(help="paper or live")] = None,
+) -> None:
+    """Export the fill log to CSV (e.g. for tax reporting)."""
+    import csv
+
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    rows = audit.fills(strategy=strategy, mode=mode)
+    with out.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["ts_utc", "mode", "strategy", "symbol", "side", "qty", "price", "fee_usd"]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row["ts_utc"], row["mode"], row["strategy"], row["symbol"],
+                    row["side"], f"{row['qty']:.10f}", f"{row['price']:.8f}",
+                    f"{row['fee_usd']:.6f}",
+                ]
+            )
+    typer.echo(f"exported {len(rows)} fills to {out}")
 
 
 @audit_app.command("fills")

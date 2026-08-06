@@ -66,7 +66,10 @@ CREATE TABLE IF NOT EXISTS paper_state (
     cash_usd REAL NOT NULL,
     units REAL NOT NULL,
     last_bar_utc TEXT,
-    updated_utc TEXT NOT NULL
+    updated_utc TEXT NOT NULL,
+    entry_price REAL,               -- fill price of the open position (stop/target base)
+    reentry_armed INTEGER NOT NULL DEFAULT 1,
+    cooldown_until_utc TEXT
 );
 
 CREATE TABLE IF NOT EXISTS kill_switch (
@@ -86,7 +89,10 @@ CREATE TABLE IF NOT EXISTS live_state (
     day_date TEXT,
     day_start_equity REAL,
     peak_equity REAL,
-    updated_utc TEXT NOT NULL
+    updated_utc TEXT NOT NULL,
+    entry_price REAL,               -- fill price of the open position (stop/target base)
+    reentry_armed INTEGER NOT NULL DEFAULT 1,
+    cooldown_until_utc TEXT
 );
 
 CREATE TABLE IF NOT EXISTS config_state (
@@ -100,6 +106,28 @@ CREATE TABLE IF NOT EXISTS config_state (
 # Additive migrations for databases created before a column existed.
 _MIGRATIONS: list[tuple[str, str, str]] = [
     ("orders", "client_order_id", "ALTER TABLE orders ADD COLUMN client_order_id TEXT"),
+    ("paper_state", "entry_price", "ALTER TABLE paper_state ADD COLUMN entry_price REAL"),
+    (
+        "paper_state",
+        "reentry_armed",
+        "ALTER TABLE paper_state ADD COLUMN reentry_armed INTEGER NOT NULL DEFAULT 1",
+    ),
+    (
+        "paper_state",
+        "cooldown_until_utc",
+        "ALTER TABLE paper_state ADD COLUMN cooldown_until_utc TEXT",
+    ),
+    ("live_state", "entry_price", "ALTER TABLE live_state ADD COLUMN entry_price REAL"),
+    (
+        "live_state",
+        "reentry_armed",
+        "ALTER TABLE live_state ADD COLUMN reentry_armed INTEGER NOT NULL DEFAULT 1",
+    ),
+    (
+        "live_state",
+        "cooldown_until_utc",
+        "ALTER TABLE live_state ADD COLUMN cooldown_until_utc TEXT",
+    ),
 ]
 
 
@@ -257,15 +285,28 @@ class AuditLog:
         return row if isinstance(row, sqlite3.Row) else None
 
     def set_paper_state(
-        self, strategy: str, cash_usd: float, units: float, last_bar_utc: str | None
+        self,
+        strategy: str,
+        cash_usd: float,
+        units: float,
+        last_bar_utc: str | None,
+        entry_price: float | None = None,
+        reentry_armed: bool = True,
+        cooldown_until_utc: str | None = None,
     ) -> None:
         self._conn.execute(
-            "INSERT INTO paper_state (strategy, cash_usd, units, last_bar_utc, updated_utc)"
-            " VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO paper_state (strategy, cash_usd, units, last_bar_utc, updated_utc,"
+            " entry_price, reentry_armed, cooldown_until_utc)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(strategy) DO UPDATE SET cash_usd = excluded.cash_usd,"
             " units = excluded.units, last_bar_utc = excluded.last_bar_utc,"
-            " updated_utc = excluded.updated_utc",
-            (strategy, cash_usd, units, last_bar_utc, _now_iso()),
+            " updated_utc = excluded.updated_utc, entry_price = excluded.entry_price,"
+            " reentry_armed = excluded.reentry_armed,"
+            " cooldown_until_utc = excluded.cooldown_until_utc",
+            (
+                strategy, cash_usd, units, last_bar_utc, _now_iso(),
+                entry_price, int(reentry_armed), cooldown_until_utc,
+            ),
         )
         self._conn.commit()
 
@@ -285,14 +326,23 @@ class AuditLog:
         day_date: str | None,
         day_start_equity: float | None,
         peak_equity: float | None,
+        entry_price: float | None = None,
+        reentry_armed: bool = True,
+        cooldown_until_utc: str | None = None,
     ) -> None:
         self._conn.execute(
             "INSERT INTO live_state (strategy, last_bar_utc, day_date, day_start_equity,"
-            " peak_equity, updated_utc) VALUES (?, ?, ?, ?, ?, ?)"
+            " peak_equity, updated_utc, entry_price, reentry_armed, cooldown_until_utc)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(strategy) DO UPDATE SET last_bar_utc = excluded.last_bar_utc,"
             " day_date = excluded.day_date, day_start_equity = excluded.day_start_equity,"
-            " peak_equity = excluded.peak_equity, updated_utc = excluded.updated_utc",
-            (strategy, last_bar_utc, day_date, day_start_equity, peak_equity, _now_iso()),
+            " peak_equity = excluded.peak_equity, updated_utc = excluded.updated_utc,"
+            " entry_price = excluded.entry_price, reentry_armed = excluded.reentry_armed,"
+            " cooldown_until_utc = excluded.cooldown_until_utc",
+            (
+                strategy, last_bar_utc, day_date, day_start_equity, peak_equity,
+                _now_iso(), entry_price, int(reentry_armed), cooldown_until_utc,
+            ),
         )
         self._conn.commit()
 

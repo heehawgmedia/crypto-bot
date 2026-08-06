@@ -105,8 +105,15 @@ class TelegramConfig(_StrictModel):
     on_kill_switch: bool = True
 
 
+class DiscordConfig(_StrictModel):
+    enabled: bool = False
+    on_fill: bool = True
+    on_kill_switch: bool = True
+
+
 class AlertsConfig(_StrictModel):
     telegram: TelegramConfig = TelegramConfig()
+    discord: DiscordConfig = DiscordConfig()
 
 
 class AuditConfig(_StrictModel):
@@ -152,6 +159,11 @@ class StrategyInstanceConfig(_StrictModel):
     timeframe: str
     params: dict[str, Any]
     param_grid: dict[str, list[Any]] = Field(default_factory=dict)
+    # Optional trade rules, applied identically in backtest, walk-forward,
+    # paper, and live (see quant_lab.risk.stops).
+    stop_loss_pct: float | None = Field(default=None, gt=0, lt=100)
+    take_profit_pct: float | None = Field(default=None, gt=0)
+    cooldown_bars: int = Field(default=0, ge=0)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

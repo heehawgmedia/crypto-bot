@@ -302,3 +302,37 @@ def test_market_rules_clamp_amount_precision(audit: AuditLog) -> None:
     # Floored to the step: raw 500/159 = 3.1446... -> 3.144
     assert amount == pytest.approx(3.144)
     assert round(amount / 0.001) * 0.001 == pytest.approx(amount)
+
+
+def test_live_stop_loss_exits_and_survives_restart(audit: AuditLog) -> None:
+    scfg = StrategyInstanceConfig(
+        name="s_live", strategy="ema_cross", exchange="kraken", symbol="BTC/USD",
+        timeframe="1h", params={"fast": 3, "slow": 8}, stop_loss_pct=5.0, cooldown_bars=2,
+    )
+    cfg = _cfg()
+    # Keep the drawdown switch out of the way: this test pins down the
+    # stop-loss + re-entry arming behavior, not the kill switch.
+    cfg.risk.kill_switches.max_drawdown_pct = 95.0
+    cfg.risk.kill_switches.max_daily_loss_pct = 95.0
+    client = FakeClient()
+    ks = KillSwitchMonitor(cfg.risk.kill_switches, audit)
+    engine = LiveEngine(scfg, cfg, client, audit, ks)
+    engine.step(_rising_df())  # entry; FakeClient fills at 100.0
+    assert engine.position_units() > 0
+    assert audit.get_live_state("s_live")["entry_price"] == pytest.approx(100.0)
+
+    # Restart: a fresh engine must still know the entry price and rules state.
+    engine2 = LiveEngine(scfg, cfg, client, audit, ks)
+    crashed = _rising_df(bars=61)
+    crashed.iloc[-1, crashed.columns.get_loc("low")] = 90.0  # below 95 stop
+    step = engine2.step(crashed)
+    assert step.acted and step.side == "sell"
+    assert "stop_loss" in step.detail
+    assert engine2.position_units() == 0.0
+    state = audit.get_live_state("s_live")
+    assert not state["reentry_armed"]
+
+    # Signal still long next bar -> entry blocked while un-armed.
+    step = engine2.step(_rising_df(bars=62))
+    assert not step.acted
+    assert "awaiting fresh signal" in step.detail

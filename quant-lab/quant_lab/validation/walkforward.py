@@ -21,6 +21,7 @@ import pandas as pd
 from quant_lab.backtest.engine import BacktestResult, CostModel, Trade, run_backtest
 from quant_lab.config import WalkforwardConfig
 from quant_lab.reporting.metrics import compute_metrics
+from quant_lab.risk.stops import NO_RULES, TradeRules
 from quant_lab.strategies import build_strategy
 
 
@@ -134,6 +135,7 @@ def run_walkforward(
     cost: CostModel,
     initial_capital: float,
     timeframe: str,
+    rules: TradeRules = NO_RULES,
 ) -> WalkForwardResult:
     windows = generate_windows(len(df), wf_cfg)
     if not windows:
@@ -149,14 +151,16 @@ def run_walkforward(
         best_params, best_value = combos[0], float("-inf")
         for params in combos:
             strategy = build_strategy(strategy_name, params)
-            is_result = run_backtest(is_df, strategy.signals(is_df), cost, initial_capital)
+            is_result = run_backtest(
+                is_df, strategy.signals(is_df), cost, initial_capital, rules=rules
+            )
             value = _metric_value(is_result, wf_cfg.optimize_metric, timeframe)
             if value > best_value:
                 best_params, best_value = params, value
 
         oos_df = df.iloc[window.oos_start : window.oos_end]
         oos_signals = _oos_signals(strategy_name, best_params, df, window)
-        oos_result = run_backtest(oos_df, oos_signals, cost, initial_capital)
+        oos_result = run_backtest(oos_df, oos_signals, cost, initial_capital, rules=rules)
         results.append(
             WindowResult(
                 window=window,

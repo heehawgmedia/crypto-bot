@@ -24,6 +24,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from quant_lab.risk.stops import TradeRules
+
 
 @dataclass(frozen=True)
 class CostModel:
@@ -49,6 +51,7 @@ class Trade:
     return_pct: float  # equity-based, net of fees and slippage
     pnl_usd: float
     fees_usd: float
+    exit_reason: str | None = None  # signal | stop_loss | take_profit | None (open)
 
 
 @dataclass
@@ -83,7 +86,14 @@ def run_backtest(
     signals: pd.Series,
     cost: CostModel,
     initial_capital: float,
+    rules: TradeRules | None = None,
 ) -> BacktestResult:
+    """Backtest with the standard execution model. When ``rules`` is active
+    (stop-loss / take-profit / cooldown), the path-dependent bar-loop engine
+    runs; otherwise the vectorized engine does. The two are held equivalent
+    for the no-rules case by a differential test."""
+    if rules is not None and rules.active:
+        return _run_backtest_with_rules(df, signals, cost, initial_capital, rules)
     signals = _validate_signals(df, signals)
     if len(df) < 2:
         raise ValueError("need at least 2 bars to backtest")
@@ -164,6 +174,7 @@ def _extract_trades(
                     return_pct=float(equity[exit_i] / capital_before - 1.0),
                     pnl_usd=float(equity[exit_i] - capital_before),
                     fees_usd=float(fees[entry_i] + fees[exit_i]),
+                    exit_reason="signal",
                 )
             )
         else:
@@ -188,3 +199,125 @@ def buy_and_hold(df: pd.DataFrame, cost: CostModel, initial_capital: float) -> B
     """Benchmark: long from the first tradable open to the end, same cost model."""
     signals = pd.Series(1, index=df.index, dtype="int64")
     return run_backtest(df, signals, cost, initial_capital)
+
+
+def _run_backtest_with_rules(
+    df: pd.DataFrame,
+    signals: pd.Series,
+    cost: CostModel,
+    initial_capital: float,
+    rules: TradeRules,
+) -> BacktestResult:
+    """Bar-loop engine for path-dependent trade rules (SL/TP/cooldown).
+
+    Timing is identical to the vectorized engine: decisions are taken on bar
+    close and execute at the NEXT bar open. Stop/target triggers are evaluated
+    against the completed bar's low/high and also exit at the next open — this
+    system trades from closed candles and does not rest stop orders, and the
+    backtest must not pretend otherwise. After a stop/target exit, re-entry
+    requires the signal to drop to 0 first, plus ``cooldown_bars`` bars.
+    """
+    sig = _validate_signals(df, signals)
+    if len(df) < 2:
+        raise ValueError("need at least 2 bars to backtest")
+
+    open_ = df["open"].to_numpy(dtype="float64")
+    high = df["high"].to_numpy(dtype="float64")
+    low = df["low"].to_numpy(dtype="float64")
+    close = df["close"].to_numpy(dtype="float64")
+    index = df.index
+    n = len(df)
+    fee, slip = cost.fee, cost.slippage
+
+    cash, units = initial_capital, 0.0
+    entry_price = 0.0
+    entry_bar = -1
+    entry_fee = 0.0
+    capital_before = 0.0
+    total_fees = 0.0
+    armed = True  # re-entry allowed; cleared by stop/target exits until signal drops to 0
+    cooldown_until = 0  # earliest bar index at whose open an entry may execute
+    pending: str | None = None  # action queued at last close: buy | sell
+    pending_reason = "signal"
+
+    equity = np.empty(n)
+    position = np.zeros(n, dtype="int64")
+    trades: list[Trade] = []
+
+    for t in range(n):
+        # 1. Execute the action queued at the previous close, at this open.
+        if pending == "buy" and units == 0.0 and t >= cooldown_until:
+            fill = open_[t] * (1.0 + slip)
+            entry_fee = cash * fee
+            units = cash * (1.0 - fee) / fill
+            capital_before = cash
+            cash = 0.0
+            entry_price = fill
+            entry_bar = t
+            total_fees += entry_fee
+        elif pending == "sell" and units > 0.0:
+            fill = open_[t] * (1.0 - slip)
+            proceeds = units * fill
+            exit_fee = proceeds * fee
+            cash = proceeds * (1.0 - fee)
+            total_fees += exit_fee
+            trades.append(
+                Trade(
+                    entry_time=index[entry_bar],
+                    exit_time=index[t],
+                    entry_price=entry_price,
+                    exit_price=fill,
+                    bars_held=t - entry_bar,
+                    return_pct=cash / capital_before - 1.0,
+                    pnl_usd=cash - capital_before,
+                    fees_usd=entry_fee + exit_fee,
+                    exit_reason=pending_reason,
+                )
+            )
+            units = 0.0
+            if pending_reason != "signal":
+                cooldown_until = t + 1 + rules.cooldown_bars
+        pending = None
+
+        # 2. Mark to close.
+        equity[t] = cash + units * close[t]
+        position[t] = 1 if units > 0.0 else 0
+
+        # 3. Decide at this close what happens at the next open.
+        s = int(sig.iloc[t])
+        if s == 0:
+            armed = True
+        if units > 0.0:
+            trigger = rules.exit_trigger(entry_price, low[t], high[t])
+            if trigger is not None:
+                pending, pending_reason = "sell", trigger
+                armed = False
+            elif s == 0:
+                pending, pending_reason = "sell", "signal"
+        elif s == 1 and armed:
+            pending = "buy"
+
+    if units > 0.0:
+        trades.append(
+            Trade(
+                entry_time=index[entry_bar],
+                exit_time=None,
+                entry_price=entry_price,
+                exit_price=None,
+                bars_held=n - 1 - entry_bar,
+                return_pct=equity[-1] / capital_before - 1.0,
+                pnl_usd=float(equity[-1] - capital_before),
+                fees_usd=entry_fee,
+                exit_reason=None,
+            )
+        )
+
+    equity_s = pd.Series(equity, index=index, name="equity")
+    return BacktestResult(
+        equity=equity_s,
+        position=pd.Series(position, index=index, name="position"),
+        returns=equity_s.pct_change().fillna(equity_s.iloc[0] / initial_capital - 1.0),
+        trades=trades,
+        initial_capital=initial_capital,
+        total_fees_usd=total_fees,
+    )

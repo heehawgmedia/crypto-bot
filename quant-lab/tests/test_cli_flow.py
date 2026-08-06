@@ -183,3 +183,12 @@ def test_preflight_fails_safe_without_live_setup(workspace: Path) -> None:
     assert result.exit_code == 1
     assert "preflight FAIL" in result.output
     assert "stage" in result.output
+
+
+def test_audit_export_csv(workspace: Path) -> None:
+    result = runner.invoke(
+        app, ["audit", "export", "--out", "fills.csv"]
+    )
+    assert result.exit_code == 0, result.output
+    content = (workspace / "fills.csv").read_text()
+    assert content.startswith("ts_utc,mode,strategy,symbol,side,qty,price,fee_usd")

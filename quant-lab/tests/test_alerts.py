@@ -68,3 +68,49 @@ def test_send_failure_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(urllib.request, "urlopen", exploding_urlopen)
     alerter = TelegramAlerter("t", "c", on_fill=True, on_kill_switch=True)
     alerter.fill("this must not raise")  # trading loop must survive
+
+
+def test_discord_alerter_posts_webhook(monkeypatch: pytest.MonkeyPatch) -> None:
+    from quant_lab.alerts import DiscordAlerter
+
+    captured: dict = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=0):
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode())
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    DiscordAlerter("https://discord.com/api/webhooks/x/y", True, True).fill("filled!")
+    assert captured["url"] == "https://discord.com/api/webhooks/x/y"
+    assert captured["body"] == {"content": "filled!"}
+
+
+def test_multi_alerter_dispatches_to_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    from quant_lab.alerts import MultiAlerter, alerter_from_config
+
+    monkeypatch.setenv("QL_TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("QL_TELEGRAM_CHAT_ID", "c")
+    monkeypatch.setenv("QL_DISCORD_WEBHOOK_URL", "https://discord.test/hook")
+    cfg = AlertsConfig.model_validate(
+        {"telegram": {"enabled": True}, "discord": {"enabled": True}}
+    )
+    alerter = alerter_from_config(cfg)
+    assert isinstance(alerter, MultiAlerter)
+
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "quant_lab.alerts.TelegramAlerter._send", lambda self, text: sent.append(f"tg:{text}")
+    )
+    monkeypatch.setattr(
+        "quant_lab.alerts.DiscordAlerter._send", lambda self, text: sent.append(f"dc:{text}")
+    )
+    alerter.fill("hello")
+    assert sent == ["tg:hello", "dc:hello"]

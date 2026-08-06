@@ -75,7 +75,36 @@ quant-lab risk reset                  # the only way to re-enable after a trip
 quant-lab status                      # every strategy's stage + paper clock at a glance
 quant-lab live preflight -s <yaml>    # read-only go-live checklist (keys, rules, data, reconcile)
 quant-lab audit events|orders|fills   # the full audit trail
+quant-lab audit export -o fills.csv   # fill log as CSV (tax reporting)
 ```
+
+## Trade rules (stop-loss / take-profit / cooldown)
+
+Optional per-strategy rules in the strategy YAML:
+
+```yaml
+stop_loss_pct: 5.0        # exit if the completed bar's low touches entry * (1 - 5%)
+take_profit_pct: 12.0     # exit if the completed bar's high touches entry * (1 + 12%)
+cooldown_bars: 4          # no new entry for 4 bars after a stop/target exit
+```
+
+Semantics are identical everywhere — backtest, walk-forward validation, paper,
+and live: triggers evaluate on the completed bar and exit at the next
+opportunity (next bar open in the backtest; the current poll in paper/live).
+The backtest never pretends a resting stop order filled at the stop price,
+because live trading doesn't rest stop orders. After a stop/target exit,
+re-entry requires the signal to drop to 0 first (a fresh edge), plus the
+cooldown. If both levels are touched in one bar, the stop wins (worst case).
+Rules state (entry price, arming, cooldown) is durable in SQLite — restarts
+can't reset it. Stop exits execute even while the kill switch is tripped
+(they reduce risk).
+
+## Alerts
+
+Telegram and/or Discord, configured in `config.yaml` under `alerts:`;
+credentials via env (`QL_TELEGRAM_BOT_TOKEN`/`QL_TELEGRAM_CHAT_ID`,
+`QL_DISCORD_WEBHOOK_URL`). Delivery is best-effort — an alert outage can
+never break the trading loop.
 
 Data lands in `quant-lab/data/parquet/<exchange>/<symbol>/<timeframe>.parquet`
 (gitignored). Updates are incremental — re-running `data update` fetches only

@@ -58,17 +58,77 @@ class TelegramAlerter:
             self._send(text)
 
 
-def alerter_from_config(cfg: AlertsConfig) -> Alerter:
-    tg = cfg.telegram
-    if not tg.enabled:
-        return NullAlerter()
-    token = os.environ.get("QL_TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("QL_TELEGRAM_CHAT_ID", "")
-    if not token or not chat_id:
-        print(
-            "telegram alerts enabled but QL_TELEGRAM_BOT_TOKEN / QL_TELEGRAM_CHAT_ID "
-            "not set; alerts disabled",
-            file=sys.stderr,
+class DiscordAlerter:
+    """Posts to a Discord webhook (QL_DISCORD_WEBHOOK_URL). Best-effort."""
+
+    def __init__(self, webhook_url: str, on_fill: bool, on_kill_switch: bool) -> None:
+        self._url = webhook_url
+        self._on_fill = on_fill
+        self._on_kill_switch = on_kill_switch
+
+    def _send(self, text: str) -> None:
+        payload = json.dumps({"content": text}).encode()
+        request = urllib.request.Request(
+            self._url, data=payload, headers={"Content-Type": "application/json"}
         )
+        try:
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+        except Exception as exc:  # noqa: BLE001 - alerting must never break trading
+            print(f"discord alert failed: {exc}", file=sys.stderr)
+
+    def fill(self, text: str) -> None:
+        if self._on_fill:
+            self._send(text)
+
+    def kill_switch(self, text: str) -> None:
+        if self._on_kill_switch:
+            self._send(text)
+
+
+class MultiAlerter:
+    def __init__(self, alerters: list[Alerter]) -> None:
+        self._alerters = alerters
+
+    def fill(self, text: str) -> None:
+        for a in self._alerters:
+            a.fill(text)
+
+    def kill_switch(self, text: str) -> None:
+        for a in self._alerters:
+            a.kill_switch(text)
+
+
+def alerter_from_config(cfg: AlertsConfig) -> Alerter:
+    alerters: list[Alerter] = []
+
+    tg = cfg.telegram
+    if tg.enabled:
+        token = os.environ.get("QL_TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("QL_TELEGRAM_CHAT_ID", "")
+        if token and chat_id:
+            alerters.append(TelegramAlerter(token, chat_id, tg.on_fill, tg.on_kill_switch))
+        else:
+            print(
+                "telegram alerts enabled but QL_TELEGRAM_BOT_TOKEN / QL_TELEGRAM_CHAT_ID "
+                "not set; telegram alerts disabled",
+                file=sys.stderr,
+            )
+
+    dc = cfg.discord
+    if dc.enabled:
+        webhook = os.environ.get("QL_DISCORD_WEBHOOK_URL", "")
+        if webhook:
+            alerters.append(DiscordAlerter(webhook, dc.on_fill, dc.on_kill_switch))
+        else:
+            print(
+                "discord alerts enabled but QL_DISCORD_WEBHOOK_URL not set; "
+                "discord alerts disabled",
+                file=sys.stderr,
+            )
+
+    if not alerters:
         return NullAlerter()
-    return TelegramAlerter(token, chat_id, tg.on_fill, tg.on_kill_switch)
+    if len(alerters) == 1:
+        return alerters[0]
+    return MultiAlerter(alerters)

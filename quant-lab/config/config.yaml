@@ -52,6 +52,10 @@ alerts:
     enabled: false              # token/chat id from env: QL_TELEGRAM_BOT_TOKEN / QL_TELEGRAM_CHAT_ID
     on_fill: true
     on_kill_switch: true
+  discord:
+    enabled: false              # webhook from env: QL_DISCORD_WEBHOOK_URL
+    on_fill: true
+    on_kill_switch: true
 
 audit:
   sqlite_path: data/quantlab.db

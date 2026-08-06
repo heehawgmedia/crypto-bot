@@ -133,3 +133,49 @@ def test_paper_fees_and_slippage_are_charged_both_ways(audit: AuditLog) -> None:
     assert sell["fee_usd"] > 0
     last = 60.0
     assert sell["price"] == pytest.approx(last * (1 - COST.slippage))
+
+
+# -- trade rules in paper mode ----------------------------------------------
+
+
+def _scfg_with_stops() -> StrategyInstanceConfig:
+    return StrategyInstanceConfig(
+        name="ema_test",
+        strategy="ema_cross",
+        exchange="kraken",
+        symbol="BTC/USD",
+        timeframe="1h",
+        params={"fast": 3, "slow": 8},
+        stop_loss_pct=5.0,
+        cooldown_bars=3,
+    )
+
+
+def test_paper_stop_loss_exit_and_no_instant_reentry(audit: AuditLog) -> None:
+    engine = PaperEngine(_scfg_with_stops(), COST, audit, 10_000.0)
+    up = _trending_up(50)
+    engine.step(up)  # buys; entry price recorded
+    state = audit.get_paper_state("ema_test")
+    assert state["entry_price"] is not None
+
+    # Next bar crashes through the 5% stop but the trend signal stays long.
+    crashed = _trending_up(51)
+    entry = float(state["entry_price"])
+    crashed.iloc[-1, crashed.columns.get_loc("low")] = entry * 0.90
+    crashed.iloc[-1, crashed.columns.get_loc("close")] = entry * 0.999  # signal still long
+    crashed.iloc[-1, crashed.columns.get_loc("open")] = entry
+    step = engine.step(crashed)
+    assert step.acted and step.side == "sell"
+    assert "stop_loss" in step.detail
+
+    sells = [o for o in audit.orders(strategy="ema_test") if o["side"] == "sell"]
+    assert sells[0]["reason"] == "stop_loss"
+    state = audit.get_paper_state("ema_test")
+    assert not state["reentry_armed"]
+    assert state["cooldown_until_utc"] is not None
+
+    # Signal still long on the next bar -> blocked (not armed).
+    still_up = _trending_up(52)
+    step = engine.step(still_up)
+    assert not step.acted
+    assert audit.get_paper_state("ema_test")["units"] == 0.0
