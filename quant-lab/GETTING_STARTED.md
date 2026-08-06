@@ -56,6 +56,18 @@ venv activated (you'll see `(.venv)` in your prompt). In every NEW terminal,
 re-activate first: `.venv\Scripts\Activate.ps1` (Windows) or
 `source .venv/bin/activate` (Mac/Linux).
 
+**If `quant-lab` is "not recognized"** (installed without an active venv, or
+the Scripts folder isn't on PATH), use this PATH-proof form instead — it is
+the exact same program:
+
+```powershell
+py -m quant_lab.cli setup          # Windows
+python3 -m quant_lab.cli setup     # Mac/Linux
+```
+
+Every `quant-lab <command>` in this guide can be written as
+`py -m quant_lab.cli <command>`.
+
 ## 3. Download market data — one command
 
 ```bash
