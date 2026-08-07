@@ -149,6 +149,31 @@ class AppConfig(_StrictModel):
         return self
 
 
+class WalkforwardOverride(_StrictModel):
+    """Per-strategy overrides of the global walk-forward windows (a daily
+    strategy needs far smaller bar counts than an hourly one)."""
+
+    in_sample_bars: int | None = Field(default=None, gt=0)
+    out_of_sample_bars: int | None = Field(default=None, gt=0)
+    step_bars: int | None = Field(default=None, gt=0)
+    min_windows: int | None = Field(default=None, ge=1)
+    optimize_metric: Literal["sharpe", "sortino", "profit_factor"] | None = None
+
+
+def effective_walkforward(
+    base: WalkforwardConfig, override: WalkforwardOverride | None
+) -> WalkforwardConfig:
+    """Merge a strategy's overrides onto the global config; the merged result
+    passes through full validation (incl. the OOS-overlap rule)."""
+    if override is None:
+        return base
+    merged = base.model_dump()
+    for key, value in override.model_dump().items():
+        if value is not None:
+            merged[key] = value
+    return WalkforwardConfig.model_validate(merged)
+
+
 class StrategyInstanceConfig(_StrictModel):
     """One strategy instance (config/strategies/*.yaml)."""
 
@@ -172,6 +197,8 @@ class StrategyInstanceConfig(_StrictModel):
     stop_loss_pct: float | None = Field(default=None, gt=0, lt=100)
     take_profit_pct: float | None = Field(default=None, gt=0)
     cooldown_bars: int = Field(default=0, ge=0)
+    # Optional per-strategy walk-forward window sizes.
+    walkforward: WalkforwardOverride | None = None
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

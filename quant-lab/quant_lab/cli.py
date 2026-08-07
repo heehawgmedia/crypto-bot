@@ -361,7 +361,14 @@ def validate_run(
     cfg = _load(config)
     scfg, df, cost = _load_strategy_inputs(cfg, strategy)
 
+    from quant_lab.config import effective_walkforward
     from quant_lab.risk.stops import TradeRules
+
+    try:
+        wf_cfg = effective_walkforward(cfg.walkforward, scfg.walkforward)
+    except Exception as exc:
+        typer.secho(f"walkforward override invalid: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
 
     try:
         wf = run_walkforward(
@@ -369,7 +376,7 @@ def validate_run(
             scfg.strategy,
             scfg.params,
             scfg.param_grid,
-            cfg.walkforward,
+            wf_cfg,
             cost,
             cfg.backtest.initial_capital_usd,
             scfg.timeframe,
@@ -403,7 +410,7 @@ def validate_run(
         )
     )
 
-    decision = evaluate_validation_gate(wf, cfg, scfg.timeframe)
+    decision = evaluate_validation_gate(wf, cfg, scfg.timeframe, wf_cfg=wf_cfg)
     typer.echo("")
     audit = _open_audit(cfg)
     if decision.passed:

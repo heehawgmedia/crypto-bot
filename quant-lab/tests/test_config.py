@@ -80,3 +80,39 @@ def test_max_positions_capped_at_three() -> None:
     raw["risk"]["max_positions"] = 4
     with pytest.raises(ValidationError):
         _validate(raw)
+
+
+def test_walkforward_override_merges_and_validates() -> None:
+    from quant_lab.config import WalkforwardConfig, WalkforwardOverride, effective_walkforward
+
+    base = WalkforwardConfig(
+        in_sample_bars=4380, out_of_sample_bars=1460, step_bars=1460, min_windows=4
+    )
+    assert effective_walkforward(base, None) is base
+
+    override = WalkforwardOverride(in_sample_bars=730, out_of_sample_bars=182, step_bars=182)
+    merged = effective_walkforward(base, override)
+    assert merged.in_sample_bars == 730
+    assert merged.out_of_sample_bars == 182
+    assert merged.min_windows == 4  # untouched fields come from the base
+
+    # A merged result that violates the OOS-overlap rule must still be rejected.
+    bad = WalkforwardOverride(step_bars=100)  # < base out_of_sample_bars
+    with pytest.raises(ValidationError, match="double-count"):
+        effective_walkforward(base, bad)
+
+
+def test_strategy_yaml_accepts_walkforward_override() -> None:
+    from quant_lab.config import StrategyInstanceConfig
+
+    scfg = StrategyInstanceConfig.model_validate(
+        {
+            "name": "s", "strategy": "trend_regime", "exchange": "kraken",
+            "symbol": "BTC/USD", "timeframe": "1d",
+            "params": {"regime_len": 200, "fast": 20, "slow": 50},
+            "walkforward": {"in_sample_bars": 730, "out_of_sample_bars": 182,
+                            "step_bars": 182},
+        }
+    )
+    assert scfg.walkforward is not None
+    assert scfg.walkforward.in_sample_bars == 730

@@ -1,0 +1,26 @@
+name: trend_regime_btc_1d
+strategy: trend_regime
+exchange: kraken          # orders execute here (kraken fees apply)
+data_exchange: coinbase   # deep OHLCV history comes from here
+symbol: BTC/USD
+timeframe: 1d
+params:
+  regime_len: 200
+  fast: 20
+  slow: 50
+param_grid:
+  regime_len: [100, 150, 200]
+  fast: [10, 20]
+  slow: [50, 100]
+
+# Daily bars need much smaller walk-forward windows than the global
+# (hourly-sized) config: ~2 years in-sample, ~6 months out-of-sample.
+walkforward:
+  in_sample_bars: 730
+  out_of_sample_bars: 182
+  step_bars: 182
+  min_windows: 6
+
+# Wide catastrophe stop; the strategy's own exit does the routine work.
+stop_loss_pct: 25.0
+cooldown_bars: 5

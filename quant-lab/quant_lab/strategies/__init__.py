@@ -8,9 +8,10 @@ from quant_lab.strategies.base import Strategy, StrategyParams
 from quant_lab.strategies.donchian import Donchian
 from quant_lab.strategies.ema_cross import EmaCross
 from quant_lab.strategies.rsi_mr import RsiMr
+from quant_lab.strategies.trend_regime import TrendRegime
 
 REGISTRY: dict[str, type[Strategy]] = {
-    cls.name: cls for cls in (EmaCross, RsiMr, Donchian)
+    cls.name: cls for cls in (EmaCross, RsiMr, Donchian, TrendRegime)
 }
 
 __all__ = ["REGISTRY", "Strategy", "StrategyParams", "build_strategy"]

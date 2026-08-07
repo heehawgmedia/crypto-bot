@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from quant_lab.config import AppConfig
+from quant_lab.config import AppConfig, WalkforwardConfig
 from quant_lab.reporting.metrics import compute_metrics
 from quant_lab.validation.walkforward import WalkForwardResult
 
@@ -28,16 +28,22 @@ class GateDecision:
 
 
 def evaluate_validation_gate(
-    wf: WalkForwardResult, cfg: AppConfig, timeframe: str
+    wf: WalkForwardResult,
+    cfg: AppConfig,
+    timeframe: str,
+    wf_cfg: WalkforwardConfig | None = None,
 ) -> GateDecision:
-    """candidate -> validated: the stitched OOS record must clear every bar."""
+    """candidate -> validated: the stitched OOS record must clear every bar.
+
+    ``wf_cfg`` is the effective walk-forward config actually used for the run
+    (per-strategy overrides applied); defaults to the global one.
+    """
     reasons: list[str] = []
+    min_windows = (wf_cfg or cfg.walkforward).min_windows
 
     n_windows = len(wf.windows)
-    if n_windows < cfg.walkforward.min_windows:
-        reasons.append(
-            f"only {n_windows} walk-forward windows; need >= {cfg.walkforward.min_windows}"
-        )
+    if n_windows < min_windows:
+        reasons.append(f"only {n_windows} walk-forward windows; need >= {min_windows}")
 
     n_trades = len(wf.closed_oos_trades)
     if n_trades < cfg.promotion.min_oos_trades:

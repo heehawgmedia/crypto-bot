@@ -11,6 +11,7 @@ PARAMS = {
     "ema_cross": {"fast": 5, "slow": 20},
     "rsi_mr": {"period": 14, "oversold": 30, "overbought": 70},
     "donchian": {"entry_lookback": 10, "exit_lookback": 5},
+    "trend_regime": {"regime_len": 60, "fast": 5, "slow": 20},
 }
 
 
@@ -19,7 +20,7 @@ def _build(name: str) -> Strategy:
 
 
 def test_registry_has_all_baselines() -> None:
-    assert set(REGISTRY) == {"ema_cross", "rsi_mr", "donchian"}
+    assert set(REGISTRY) == {"ema_cross", "rsi_mr", "donchian", "trend_regime"}
     assert set(PARAMS) == set(REGISTRY)
 
 
