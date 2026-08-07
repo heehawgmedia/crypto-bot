@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import pandas as pd
 import typer
@@ -15,6 +15,7 @@ from quant_lab.config import AppConfig, StrategyInstanceConfig, load_config, loa
 from quant_lab.data.fetcher import OhlcvFetcher, make_ccxt_client
 from quant_lab.data.integrity import check_ohlcv
 from quant_lab.data.store import ParquetStore
+from quant_lab.data.timeframes import timeframe_to_ms
 from quant_lab.paper.engine import PaperEngine
 from quant_lab.reporting.metrics import compute_metrics
 from quant_lab.reporting.tearsheet import render_tearsheet
@@ -152,6 +153,90 @@ def ls(config: ConfigOpt = DEFAULT_CONFIG) -> None:
                 f"{cfg.data.exchange} {sym} {tf}: {len(df)} bars, "
                 f"{df.index[0]} -> {df.index[-1]}"
             )
+
+
+@data_app.command("heal")
+def heal(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    symbol: Annotated[str | None, typer.Option(help="Limit to one symbol")] = None,
+    timeframe: Annotated[str | None, typer.Option(help="Limit to one timeframe")] = None,
+    max_fill: Annotated[
+        int, typer.Option(help="Largest gap (bars) to patch with flat candles")
+    ] = 12,
+) -> None:
+    """Repair gaps in stored data.
+
+    Each gap is first refetched from the exchange. Bars the exchange truly
+    doesn't have (outages) are patched with flat zero-volume candles at the
+    previous close — every synthetic bar is recorded in the audit trail, so
+    the record of what is real and what is patched is permanent.
+    """
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    exchange = cfg.data.exchange
+    store = ParquetStore(cfg.data.parquet_dir)
+    client = make_ccxt_client(exchange, cfg.exchanges[exchange].rate_limit_ms)
+    fetcher = OhlcvFetcher(client, store, exchange)
+    any_failed = False
+
+    for sym, tf in _targets(cfg, symbol, timeframe):
+        df = store.read(exchange, sym, tf)
+        if df.empty:
+            continue
+        bar = pd.Timedelta(milliseconds=timeframe_to_ms(tf))
+        report = check_ohlcv(df, tf, cfg.data.max_gap_bars)
+        if not report.gaps:
+            typer.echo(f"{sym} {tf}: no gaps")
+            continue
+
+        # Pass 1: ask the exchange again for each hole.
+        for gap in report.gaps:
+            since_ms = int((gap.start + bar).value // 1_000_000)
+            until_ms = int(gap.end.value // 1_000_000)
+            try:
+                fetched = fetcher.fetch_range(sym, tf, since_ms, until_ms)
+                if not fetched.empty:
+                    store.write(exchange, sym, tf, fetched)
+            except Exception as exc:  # noqa: BLE001 - keep healing other gaps
+                typer.secho(f"{sym} {tf}: refetch failed ({exc})", fg=typer.colors.YELLOW)
+
+        # Pass 2: flat-fill whatever the exchange genuinely doesn't have.
+        df = store.read(exchange, sym, tf)
+        report = check_ohlcv(df, tf, cfg.data.max_gap_bars)
+        filled: list[str] = []
+        for gap in report.gaps:
+            if gap.missing_bars > max_fill:
+                typer.secho(
+                    f"{sym} {tf}: gap of {gap.missing_bars} bars at {gap.start} "
+                    f"exceeds --max-fill {max_fill}; not patching",
+                    fg=typer.colors.YELLOW,
+                )
+                continue
+            prev_close = float(cast(float, df.loc[gap.start, "close"]))
+            stamps = pd.date_range(gap.start + bar, gap.end - bar, freq=bar)
+            synth = pd.DataFrame(
+                {
+                    "open": prev_close, "high": prev_close, "low": prev_close,
+                    "close": prev_close, "volume": 0.0,
+                },
+                index=pd.DatetimeIndex(stamps, name="timestamp"),
+            )
+            store.write(exchange, sym, tf, synth)
+            filled.extend(ts.isoformat() for ts in stamps)
+        if filled:
+            audit.record(
+                "gap_fill",
+                {"exchange": exchange, "symbol": sym, "timeframe": tf, "bars": filled},
+            )
+
+        final = check_ohlcv(store.read(exchange, sym, tf), tf, cfg.data.max_gap_bars)
+        typer.echo(
+            f"{sym} {tf}: {len(filled)} bar(s) flat-filled, "
+            f"{final.summary().splitlines()[0]}"
+        )
+        any_failed = any_failed or not final.ok
+    if any_failed:
+        raise typer.Exit(code=1)
 
 
 @data_app.command("import-csv")

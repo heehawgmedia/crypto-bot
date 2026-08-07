@@ -237,3 +237,48 @@ def test_setup_offline_keeps_existing_data_and_guides(
     # Data was pre-seeded by the workspace fixture and must still verify.
     assert "BTC/USD 1h: rows=2500" in result.output
     assert "validate run" in result.output
+
+
+def test_data_heal_refetches_then_flat_fills(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gaps are refetched from the exchange when possible; true outage holes
+    are flat-filled with zero-volume candles and land in the audit trail."""
+    from quant_lab.data.store import ParquetStore as PS
+
+    full = make_ohlcv(start="2023-01-01", bars=200, seed=7)
+    refetchable = full.iloc[50:52]  # the exchange still has these two bars
+    outage = full.index[120:123]  # the exchange lost these three forever
+
+    gappy = full.drop(full.index[50:52]).drop(outage)
+    store = PS(workspace / "data" / "parquet")
+    store.path_for("kraken", "BTC/USD", "1h").unlink()  # replace fixture data
+    store.write("kraken", "BTC/USD", "1h", gappy)
+
+    class HealFake:
+        def fetch_ohlcv(self, symbol, timeframe, since, limit, params):
+            rows = []
+            for ts, row in refetchable.iterrows():
+                ms = int(ts.value // 1_000_000)
+                if since <= ms < params["until"]:
+                    rows.append([ms, row["open"], row["high"], row["low"],
+                                 row["close"], row["volume"]])
+            return rows
+
+    monkeypatch.setattr("quant_lab.cli.make_ccxt_client", lambda *a, **k: HealFake())
+    result = runner.invoke(app, ["data", "heal"])
+    assert result.exit_code == 0, result.output
+    assert "3 bar(s) flat-filled" in result.output
+    assert "status=OK" in result.output
+
+    healed = store.read("kraken", "BTC/USD", "1h")
+    assert len(healed) == 200
+    # Refetched bars carry real values; outage bars are flat at prior close.
+    assert healed.loc[full.index[50], "close"] == pytest.approx(full["close"].iloc[50])
+    prev_close = full["close"].iloc[119]
+    for ts in outage:
+        assert healed.loc[ts, "close"] == pytest.approx(prev_close)
+        assert healed.loc[ts, "volume"] == 0.0
+
+    events = runner.invoke(app, ["audit", "events", "--kind", "gap_fill"])
+    assert "gap_fill" in events.output
