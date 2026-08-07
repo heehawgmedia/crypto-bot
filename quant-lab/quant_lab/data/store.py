@@ -64,6 +64,10 @@ class ParquetStore:
         tmp.replace(path)
         return len(merged)
 
+    def first_timestamp(self, exchange: str, symbol: str, timeframe: str) -> pd.Timestamp | None:
+        df = self.read(exchange, symbol, timeframe)
+        return None if df.empty else df.index[0]
+
     def last_timestamp(self, exchange: str, symbol: str, timeframe: str) -> pd.Timestamp | None:
         df = self.read(exchange, symbol, timeframe)
         return None if df.empty else df.index[-1]
