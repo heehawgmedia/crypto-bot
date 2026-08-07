@@ -103,3 +103,36 @@ def test_official_record_is_oos_only() -> None:
     wf = run_walkforward(df, "ema_cross", {"fast": 5, "slow": 20}, {}, WF, COST, 10_000.0, "1h")
     is_bars = df.index[:200]  # first window's in-sample region
     assert wf.stitched_equity.index.intersection(is_bars).empty
+
+
+def test_invalid_grid_combos_are_skipped_and_reported() -> None:
+    df = make_ohlcv(bars=600, seed=41)
+    wf = run_walkforward(
+        df,
+        "ema_cross",
+        {"fast": 5, "slow": 20},
+        {"fast": [5, 30], "slow": [20, 50]},  # (30, 20) violates fast < slow
+        WF,
+        COST,
+        10_000.0,
+        "1h",
+    )
+    assert len(wf.skipped_combos) == 1
+    assert wf.skipped_combos[0] == {"fast": 30, "slow": 20}
+    for w in wf.windows:
+        assert (w.best_params["fast"], w.best_params["slow"]) != (30, 20)
+
+
+def test_all_invalid_grid_raises() -> None:
+    df = make_ohlcv(bars=600, seed=43)
+    with pytest.raises(ValueError, match="every parameter combination"):
+        run_walkforward(
+            df,
+            "ema_cross",
+            {"fast": 50, "slow": 20},  # base itself invalid
+            {},
+            WF,
+            COST,
+            10_000.0,
+            "1h",
+        )

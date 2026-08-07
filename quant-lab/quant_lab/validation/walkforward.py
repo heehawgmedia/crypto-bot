@@ -13,10 +13,11 @@ already warmed up on strictly-past data (no cold start, no future access).
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
+from pydantic import ValidationError
 
 from quant_lab.backtest.engine import BacktestResult, CostModel, Trade, run_backtest
 from quant_lab.config import WalkforwardConfig
@@ -48,6 +49,9 @@ class WalkForwardResult:
     stitched_equity: pd.Series  # compounded across OOS windows only
     stitched_returns: pd.Series
     initial_capital: float
+    # Grid combinations dropped because the strategy's own param validation
+    # rejected them — reported, never silently hidden.
+    skipped_combos: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def oos_trades(self) -> list[Trade]:
@@ -144,7 +148,22 @@ def run_walkforward(
             f"{wf_cfg.in_sample_bars} IS + {wf_cfg.out_of_sample_bars} OOS"
         )
 
-    combos = param_combinations(base_params, param_grid)
+    all_combos = param_combinations(base_params, param_grid)
+    combos: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for params in all_combos:
+        try:
+            build_strategy(strategy_name, params)
+        except ValidationError:
+            skipped.append(params)
+            continue
+        combos.append(params)
+    if not combos:
+        raise ValueError(
+            f"every parameter combination in the grid is invalid for "
+            f"{strategy_name!r} (first reject: {skipped[0] if skipped else base_params})"
+        )
+
     results: list[WindowResult] = []
     for window in windows:
         is_df = df.iloc[window.is_start : window.is_end]
@@ -180,4 +199,5 @@ def run_walkforward(
         stitched_equity=stitched_equity,
         stitched_returns=stitched_returns,
         initial_capital=initial_capital,
+        skipped_combos=skipped,
     )

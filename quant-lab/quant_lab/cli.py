@@ -386,6 +386,12 @@ def validate_run(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
 
+    if wf.skipped_combos:
+        typer.secho(
+            f"note: {len(wf.skipped_combos)} grid combination(s) skipped as invalid "
+            f"for this strategy (e.g. {wf.skipped_combos[0]})",
+            fg=typer.colors.YELLOW,
+        )
     typer.echo(f"walk-forward windows: {len(wf.windows)}")
     for w in wf.windows:
         oos = w.oos_result
