@@ -107,6 +107,18 @@ systemd service). It's restart-safe: stop and start it freely, state is in
 SQLite. Watch progress with `quant-lab status` and
 `quant-lab paper status -s <yaml>`.
 
+**On Windows, make it survive reboots** — one command from an
+*administrator* PowerShell in `quant-lab`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
+```
+
+This registers a Scheduled Task that runs the fleet hidden at every logon,
+restarts it if it crashes, and logs to `data\paper_run.log`. Uninstall by
+re-running with `-Remove`. Once installed, you can close your manual
+`paper run` window — the task has it covered.
+
 Optional alerts to your phone: create a Telegram bot (@BotFather), put the
 token and your chat id in `.env` (see `.env.example`), and set
 `alerts.telegram.enabled: true` in `config/config.yaml`.

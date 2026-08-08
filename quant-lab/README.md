@@ -107,6 +107,27 @@ Rules state (entry price, arming, cooldown) is durable in SQLite — restarts
 can't reset it. Stop exits execute even while the kill switch is tripped
 (they reduce risk).
 
+## Surviving reboots (Windows)
+
+Two scripts under `scripts/` keep the paper fleet running unattended:
+
+- `scripts/run_paper.ps1` — a keeper that runs `paper run --interval 3600` in
+  an endless supervision loop (60s backoff on exit) and appends all output to
+  `data\paper_run.log`.
+- `scripts/install_autostart.ps1` — registers a Windows Scheduled Task
+  ("Heehaws Lab Paper Trading") that launches the keeper hidden at every
+  logon, and starts it immediately.
+
+Install from an **administrator** PowerShell in `quant-lab`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
+```
+
+Remove with the same command plus `-Remove`. Restarts are safe by design —
+all trading state lives in SQLite, and each completed bar is processed at
+most once, so duplicate or restarted pollers can never double-trade.
+
 ## Alerts
 
 Telegram and/or Discord, configured in `config.yaml` under `alerts:`;
