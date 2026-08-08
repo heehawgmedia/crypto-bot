@@ -557,53 +557,103 @@ def _refresh_and_read(
 
 @paper_app.command("run")
 def paper_run(
-    strategy: StrategyOpt,
     config: ConfigOpt = DEFAULT_CONFIG,
+    strategy: Annotated[
+        Path | None,
+        typer.Option(
+            "--strategy", "-s",
+            help="Strategy YAML (omit to run ALL paper-stage strategies in one process)",
+        ),
+    ] = None,
     once: Annotated[bool, typer.Option("--once", help="Single poll instead of a loop")] = False,
     interval: Annotated[int, typer.Option(help="Poll interval in seconds")] = 60,
+    strategies_dir: Annotated[
+        Path, typer.Option(help="Directory of strategy YAMLs (used without -s)")
+    ] = Path("config/strategies"),
 ) -> None:
-    """Run paper trading: live market data, simulated fills, durable state."""
+    """Run paper trading: live market data, simulated fills, durable state.
+
+    With -s, runs that one strategy. Without it, every strategy YAML whose
+    audited stage is paper (or live) runs in this single process — one
+    terminal for the whole paper fleet.
+    """
     import time
 
     cfg = _load(config)
-    scfg = load_strategy_config(strategy)
     audit = _open_audit(cfg)
-    stage = audit.get_stage(scfg.name)
-    if stage not in ("paper", "live"):
+
+    if strategy is not None:
+        candidates = [load_strategy_config(strategy)]
+        required = True
+    else:
+        candidates = []
+        required = False
+        if strategies_dir.is_dir():
+            for path in sorted(strategies_dir.glob("*.yaml")):
+                try:
+                    candidates.append(load_strategy_config(path))
+                except Exception as exc:  # noqa: BLE001 - skip malformed YAMLs
+                    typer.secho(f"skipping {path.name}: {exc}", fg=typer.colors.YELLOW, err=True)
+
+    engines: list[tuple[StrategyInstanceConfig, PaperEngine]] = []
+    alerter = alerter_from_config(cfg.alerts)
+    for scfg in candidates:
+        stage = audit.get_stage(scfg.name)
+        if stage not in ("paper", "live"):
+            if required:
+                typer.secho(
+                    f"{scfg.name} is at stage {stage!r}; run `quant-lab validate run` then "
+                    "`quant-lab promote paper` first",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            continue
+        cost = CostModel(
+            taker_fee_bps=cfg.exchanges[scfg.exchange].taker_fee_bps,
+            slippage_bps=cfg.backtest.slippage_bps,
+        )
+        engines.append(
+            (
+                scfg,
+                PaperEngine(
+                    scfg, cost, audit, cfg.backtest.initial_capital_usd, alerter,
+                    vault=cfg.vault,
+                ),
+            )
+        )
+
+    if not engines:
         typer.secho(
-            f"{scfg.name} is at stage {stage!r}; run `quant-lab validate run` then "
-            "`quant-lab promote paper` first",
+            "no paper-stage strategies found; promote one with `quant-lab promote paper`",
             fg=typer.colors.RED,
             err=True,
         )
         raise typer.Exit(code=1)
 
-    cost = CostModel(
-        taker_fee_bps=cfg.exchanges[scfg.exchange].taker_fee_bps,
-        slippage_bps=cfg.backtest.slippage_bps,
-    )
-    engine = PaperEngine(
-        scfg,
-        cost,
-        audit,
-        cfg.backtest.initial_capital_usd,
-        alerter_from_config(cfg.alerts),
-        vault=cfg.vault,
-    )
+    typer.echo(f"paper trading {len(engines)} strateg{'y' if len(engines) == 1 else 'ies'}: "
+               + ", ".join(s.name for s, _ in engines))
     while True:
-        try:
-            df = _refresh_and_read(cfg, scfg)
-            if df.empty:
-                typer.secho("no data returned from exchange", fg=typer.colors.YELLOW)
-            else:
-                step = engine.step(df)
-                typer.echo(
-                    f"{step.bar_time}  equity ${step.equity_usd:,.2f}  {step.detail}"
+        for scfg, engine in engines:
+            try:
+                df = _refresh_and_read(cfg, scfg)
+                if df.empty:
+                    typer.secho(
+                        f"{scfg.name}: no data returned from exchange", fg=typer.colors.YELLOW
+                    )
+                else:
+                    step = engine.step(df)
+                    typer.echo(
+                        f"{step.bar_time}  {scfg.name}  equity ${step.equity_usd:,.2f}  "
+                        f"{step.detail}"
+                    )
+            except Exception as exc:
+                if once:
+                    raise
+                typer.secho(
+                    f"{scfg.name}: poll failed, retrying next cycle: {exc}",
+                    fg=typer.colors.YELLOW,
                 )
-        except Exception as exc:
-            if once:
-                raise
-            typer.secho(f"poll failed, retrying in {interval}s: {exc}", fg=typer.colors.YELLOW)
         if once:
             break
         time.sleep(interval)

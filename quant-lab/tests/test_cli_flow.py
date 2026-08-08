@@ -324,3 +324,33 @@ def test_vault_cli_and_dashboard(workspace: Path) -> None:
     assert "cli_flow_test" in html_out          # trade row present
     assert "Cumulative realized PnL" in html_out
     assert "$7.40" in html_out or "7.40" in html_out
+
+
+def test_paper_run_fleet_mode(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`paper run` without -s polls every paper-stage strategy in one process."""
+    from quant_lab.audit.log import AuditLog
+
+    (workspace / "config" / "strategies" / "s2.yaml").write_text(
+        STRATEGY.replace("cli_flow_test", "cli_flow_two")
+    )
+    audit = AuditLog(workspace / "data" / "quantlab.db")
+    for name in ("cli_flow_test", "cli_flow_two"):
+        audit.set_stage(name, "validated", {})
+        audit.set_stage(name, "paper", {})
+    audit.close()
+
+    def no_network(self, *args, **kwargs):
+        return 0  # store already seeded by the fixture
+
+    monkeypatch.setattr("quant_lab.cli.OhlcvFetcher.update", no_network)
+    result = runner.invoke(app, ["paper", "run", "--once"])
+    assert result.exit_code == 0, result.output
+    assert "paper trading 2 strategies" in result.output
+    assert "cli_flow_test" in result.output
+    assert "cli_flow_two" in result.output
+
+
+def test_paper_run_fleet_mode_requires_promoted_strategy(workspace: Path) -> None:
+    result = runner.invoke(app, ["paper", "run", "--once"])
+    assert result.exit_code == 1
+    assert "no paper-stage strategies" in result.output
