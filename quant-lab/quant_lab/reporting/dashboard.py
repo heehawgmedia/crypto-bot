@@ -12,12 +12,27 @@ Palette: validated categorical/status slots from the dataviz reference palette
 from __future__ import annotations
 
 import html
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from quant_lab.audit.log import AuditLog
 from quant_lab.config import AppConfig, StrategyInstanceConfig
+from quant_lab.reporting.status import BotStatus, bot_status
+
+
+@dataclass(frozen=True)
+class ControlContext:
+    """Present only when the page is served by ``quant-lab serve``.
+
+    The token authorizes the start/stop buttons; the revision is the baseline
+    the page polls against to notice new trades. A dashboard written to a
+    file gets none of this and renders read-only.
+    """
+
+    token: str
+    revision: int
 
 
 @dataclass
@@ -200,10 +215,95 @@ def _per_trade_svg(trades: list[TradeRow]) -> str:
     </svg>"""
 
 
+def _control_panel(status: BotStatus, controls: ControlContext | None) -> str:
+    """The start/stop bar. Live when served, read-only when written to a file."""
+    pill = (
+        f'<span class="pill pill-{status.tone}" id="ql-pill">{html.escape(status.label)}</span>'
+        f'<span class="control-detail" id="ql-detail">{html.escape(status.detail)}</span>'
+    )
+    if controls is None:
+        return f"""<div class="card control">
+          <div class="control-status" aria-live="polite">{pill}</div>
+          <div class="control-detail">Static snapshot · run
+            <code>quant-lab serve</code> for live updates and start/stop buttons</div>
+        </div>"""
+    return f"""<div class="card control">
+      <div class="control-status" aria-live="polite">{pill}</div>
+      <div class="control-buttons">
+        <button type="button" id="ql-start" class="btn btn-start"
+                {"disabled" if status.trading_enabled else ""}>Start trading</button>
+        <button type="button" id="ql-stop" class="btn btn-stop"
+                {"" if status.trading_enabled else "disabled"}>Stop trading</button>
+      </div>
+      <div class="control-note" id="ql-note" role="status"></div>
+      <div class="control-help">Stop halts <strong>new entries</strong>. Open positions keep
+        their stop-loss, take-profit, and signal exits, so a stopped bot is never left holding
+        an unmanaged position. The setting is stored in the database — it survives restarts
+        and reboots.</div>
+    </div>"""
+
+
+def _live_script(controls: ControlContext) -> str:
+    return f"""<script>
+(function () {{
+  var TOKEN = {json.dumps(controls.token)};
+  var revision = {controls.revision};
+  var pill = document.getElementById('ql-pill');
+  var detail = document.getElementById('ql-detail');
+  var startBtn = document.getElementById('ql-start');
+  var stopBtn = document.getElementById('ql-stop');
+  var note = document.getElementById('ql-note');
+
+  function paint(s) {{
+    pill.textContent = s.label;
+    pill.className = 'pill pill-' + s.tone;
+    detail.textContent = s.detail;
+    startBtn.disabled = s.trading_enabled;
+    stopBtn.disabled = !s.trading_enabled;
+    if (s.revision !== revision) {{ location.reload(); }}
+  }}
+
+  function control(action) {{
+    startBtn.disabled = true; stopBtn.disabled = true;
+    note.textContent = 'working...';
+    fetch('/api/control', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json', 'X-QL-Token': TOKEN}},
+      body: JSON.stringify({{action: action}})
+    }}).then(function (r) {{
+      return r.json().then(function (s) {{
+        if (!r.ok) {{ note.textContent = s.error || 'control request failed'; tick(); return; }}
+        location.reload();
+      }});
+    }}).catch(function () {{
+      note.textContent = 'could not reach the server - is it still running?';
+      tick();
+    }});
+  }}
+
+  function tick() {{
+    fetch('/api/state', {{cache: 'no-store'}})
+      .then(function (r) {{ return r.ok ? r.json() : null; }})
+      .then(function (s) {{ if (s) paint(s); }})
+      .catch(function () {{
+        pill.textContent = 'Server offline';
+        pill.className = 'pill pill-bad';
+        detail.textContent = 'the dashboard server stopped responding';
+      }});
+  }}
+
+  startBtn.addEventListener('click', function () {{ control('resume'); }});
+  stopBtn.addEventListener('click', function () {{ control('pause'); }});
+  setInterval(tick, 5000);
+}})();
+</script>"""
+
+
 def render_dashboard(
     cfg: AppConfig,
     audit: AuditLog,
     strategies: list[StrategyInstanceConfig],
+    controls: ControlContext | None = None,
 ) -> str:
     trades = build_trades(audit)
     closed = [t for t in trades if t.pnl_usd is not None]
@@ -212,6 +312,7 @@ def render_dashboard(
     totals = audit.vault_totals()
     vault_balance = audit.vault_balance()
     tripped, ks_reason, _ = audit.kill_switch_state()
+    status = bot_status(audit)
 
     def stat(label: str, value: str, sub: str = "", cls: str = "") -> str:
         return (
@@ -355,14 +456,14 @@ def render_dashboard(
   --surface: #fcfcfb; --card: #ffffff; --border: #e7e6e1; --grid: #d9d8d2;
   --ink: #0b0b0b; --ink-2: #52514e; --ink-3: #8a897f;
   --series-1: #2a78d6; --win: #1baf7a; --loss: #e34948;
-  --vault: #4a3aa7; --good: #008300; --bad: #e34948;
+  --vault: #4a3aa7; --good: #008300; --bad: #e34948; --warn: #a55200;
 }}
 @media (prefers-color-scheme: dark) {{
   :root {{
     --surface: #131312; --card: #1a1a19; --border: #2c2b29; --grid: #3a3936;
     --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #8a897f;
     --series-1: #3987e5; --win: #199e70; --loss: #e66767;
-    --vault: #9085e9; --good: #34c759; --bad: #e66767;
+    --vault: #9085e9; --good: #34c759; --bad: #e66767; --warn: #eda145;
   }}
 }}
 * {{ box-sizing: border-box; margin: 0; }}
@@ -428,6 +529,27 @@ tr:last-child td {{ border-bottom: none; }}
 .vault-actions {{ font-size: 12.5px; color: var(--ink-2); margin-top: 10px; }}
 code {{ background: var(--surface); border: 1px solid var(--border);
        border-radius: 5px; padding: 1px 6px; font-size: 12px; }}
+.control {{ display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }}
+.control-status {{ display: flex; align-items: center; gap: 10px; flex: 1 1 260px; }}
+.control-detail {{ color: var(--ink-2); font-size: 12.5px; }}
+.control-buttons {{ display: flex; gap: 8px; }}
+.control-note {{ flex-basis: 100%; color: var(--bad); font-size: 12.5px; min-height: 0; }}
+.control-note:empty {{ display: none; }}
+.control-help {{ flex-basis: 100%; color: var(--ink-3); font-size: 12.5px;
+                border-top: 1px solid var(--border); padding-top: 10px; }}
+.pill {{ font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 999px;
+        text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }}
+.pill-good {{ background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }}
+.pill-warn {{ background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }}
+.pill-bad {{ background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }}
+.pill-idle {{ background: var(--border); color: var(--ink-2); }}
+.btn {{ font: inherit; font-weight: 600; font-size: 13px; padding: 8px 16px;
+       border-radius: 8px; border: 1px solid var(--border); background: var(--surface);
+       color: var(--ink); cursor: pointer; }}
+.btn:hover:not(:disabled) {{ border-color: var(--ink-3); }}
+.btn:disabled {{ opacity: 0.45; cursor: default; }}
+.btn-start {{ border-color: var(--good); color: var(--good); }}
+.btn-stop {{ border-color: var(--warn); color: var(--warn); }}
 </style></head><body>
 <div class="header">
   <h1>Heehaw&#39;s Lab</h1>
@@ -435,6 +557,8 @@ code {{ background: var(--surface); border: 1px solid var(--border);
    · capital cap <strong>{_money(cap) if cap is not None else "not set"}</strong>
    · generated {generated}</div>
 </div>
+
+{_control_panel(status, controls)}
 
 <div class="stats">{stats}</div>
 
@@ -463,6 +587,7 @@ code {{ background: var(--surface); border: 1px solid var(--border);
 <table><thead><tr><th>When (UTC)</th><th>Event</th><th>Strategy</th></tr></thead>
 <tbody>{events_rows or '<tr><td colspan="3" class="empty">none yet</td></tr>'}</tbody></table>
 </div></div>
+{_live_script(controls) if controls is not None else ""}
 </body></html>"""
 
 

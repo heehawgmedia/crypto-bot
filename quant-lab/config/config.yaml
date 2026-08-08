@@ -69,3 +69,7 @@ alerts:
 
 audit:
   sqlite_path: data/quantlab.db
+
+dashboard:
+  host: 127.0.0.1               # loopback only: the dashboard can start/stop trading.
+  port: 8787                    # changing this to 0.0.0.0 exposes those buttons to your LAN.

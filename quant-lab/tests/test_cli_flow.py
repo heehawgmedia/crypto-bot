@@ -354,3 +354,108 @@ def test_paper_run_fleet_mode_requires_promoted_strategy(workspace: Path) -> Non
     result = runner.invoke(app, ["paper", "run", "--once"])
     assert result.exit_code == 1
     assert "no paper-stage strategies" in result.output
+
+
+def _promote_to_paper(workspace: Path, *names: str) -> None:
+    from quant_lab.audit.log import AuditLog
+
+    audit = AuditLog(workspace / "data" / "quantlab.db")
+    for name in names:
+        audit.set_stage(name, "validated", {})
+        audit.set_stage(name, "paper", {})
+    audit.close()
+
+
+def test_pause_and_resume_round_trip(workspace: Path) -> None:
+    from quant_lab.audit.log import AuditLog
+
+    result = runner.invoke(app, ["pause", "--reason", "travelling"])
+    assert result.exit_code == 0, result.output
+    assert "PAUSED" in result.output
+    assert "still exit" in result.output
+    assert AuditLog(workspace / "data" / "quantlab.db").trading_enabled() is False
+
+    # Pausing twice is honest about being a no-op.
+    assert "already paused" in runner.invoke(app, ["pause"]).output
+
+    result = runner.invoke(app, ["resume"])
+    assert result.exit_code == 0, result.output
+    assert "RESUMED" in result.output
+    assert AuditLog(workspace / "data" / "quantlab.db").trading_enabled() is True
+
+
+def test_resume_warns_when_no_loop_is_running(workspace: Path) -> None:
+    runner.invoke(app, ["pause"])
+    result = runner.invoke(app, ["resume"])
+    assert "no trading loop is polling" in result.output
+    assert "quant-lab serve" in result.output
+
+
+def test_paper_run_while_paused_takes_no_entry(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quant_lab.audit.log import AuditLog
+
+    _promote_to_paper(workspace, "cli_flow_test")
+    runner.invoke(app, ["pause"])
+
+    def no_network(self, *args, **kwargs):
+        return 0
+
+    monkeypatch.setattr("quant_lab.cli.OhlcvFetcher.update", no_network)
+    result = runner.invoke(app, ["paper", "run", "--once"])
+    assert result.exit_code == 0, result.output
+    assert "trading is PAUSED" in result.output
+    assert AuditLog(workspace / "data" / "quantlab.db").fills() == []
+
+
+def test_paper_run_stamps_a_heartbeat(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`status` can only be honest about liveness if the loop leaves a mark."""
+    from quant_lab.audit.log import AuditLog
+
+    _promote_to_paper(workspace, "cli_flow_test")
+
+    def no_network(self, *args, **kwargs):
+        return 0
+
+    monkeypatch.setattr("quant_lab.cli.OhlcvFetcher.update", no_network)
+    runner.invoke(app, ["paper", "run", "--once", "--interval", "3600"])
+
+    audit = AuditLog(workspace / "data" / "quantlab.db")
+    beat = audit.heartbeat("paper")
+    assert beat is not None
+    assert beat["interval_s"] == 3600.0
+    assert "trading" in str(beat["detail"])
+
+    result = runner.invoke(app, ["status"])
+    assert "bot: Trading" in result.output
+
+
+def test_status_reports_offline_before_anything_runs(workspace: Path) -> None:
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "bot: Offline" in result.output
+    assert "never" in result.output
+
+
+def test_static_dashboard_has_no_control_buttons(workspace: Path) -> None:
+    """A file on disk cannot authenticate anyone, so it must not pretend to."""
+    result = runner.invoke(app, ["dashboard", "--out", "data/dash.html"])
+    assert result.exit_code == 0, result.output
+    html_out = (workspace / "data" / "dash.html").read_text(encoding="utf-8")
+    assert 'id="ql-start"' not in html_out
+    assert "/api/control" not in html_out
+    assert "quant-lab serve" in html_out
+    assert "static snapshot" in result.output
+
+
+def test_serve_refuses_a_port_already_in_use(workspace: Path) -> None:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        port = sock.getsockname()[1]
+        result = runner.invoke(app, ["serve", "--port", str(port), "--no-trade"])
+    assert result.exit_code == 1
+    assert "cannot bind" in result.output

@@ -74,7 +74,10 @@ quant-lab risk status
 quant-lab risk reset                  # the only way to re-enable after a trip
 
 # Dashboard + vault
-quant-lab dashboard --open            # modern HTML dashboard: trades, PnL charts, vault, events
+quant-lab serve --open                # LIVE dashboard at http://127.0.0.1:8787 with Start/Stop
+quant-lab pause                       # halt new entries (open positions still exit on their rules)
+quant-lab resume
+quant-lab dashboard --open            # static HTML snapshot: trades, PnL charts, vault, events
 quant-lab vault status                # 15% of each winning trade lands here (config: vault.skim_pct)
 quant-lab vault withdraw --amount 100      # record taking profit out of the system
 quant-lab vault redistribute --amount 100  # return vault funds to trading capital
@@ -107,16 +110,52 @@ Rules state (entry price, arming, cooldown) is durable in SQLite — restarts
 can't reset it. Stop exits execute even while the kill switch is tripped
 (they reduce risk).
 
+## The live dashboard (`quant-lab serve`)
+
+```bash
+quant-lab serve --open        # dashboard + paper fleet in one process
+```
+
+One process serves the dashboard and runs the paper fleet. The page is
+rendered from SQLite on every request (never a stale snapshot), polls for new
+trades and reloads itself when one lands, and carries **Start** and **Stop**
+buttons.
+
+**What Stop does**: halts *new entries* only. Open positions keep their
+stop-loss, take-profit, and signal exits, so a stopped bot is never left
+holding an unmanaged position — the same rule a kill-switch trip follows. The
+switch is a row in SQLite, so it survives restarts and reboots: a bot you
+stopped stays stopped. Both transitions land in the audit trail with who did
+it and why. `quant-lab pause` / `quant-lab resume` do the same from a
+terminal, and the dashboard reflects them within five seconds.
+
+The status pill distinguishes four states, because "configured to trade" and
+"actually trading" are different facts:
+
+| Pill | Meaning |
+|---|---|
+| **Trading** | loop polling, entries allowed |
+| **Paused** | loop polling, entries halted by you |
+| **Stopped** | you stopped it and no loop is polling |
+| **Offline** | switched on but **nothing is polling** — the failure that matters |
+
+Serving is loopback-only by default. The control endpoint additionally
+requires a per-process token that only the served page carries, refuses
+cross-origin requests, and validates the `Host` header (DNS-rebinding
+defence), so no web page you happen to have open can stop your bot. Binding a
+non-loopback address prints a warning: anyone who can load the page can then
+press Stop.
+
 ## Surviving reboots (Windows)
 
-Two scripts under `scripts/` keep the paper fleet running unattended:
+Two scripts under `scripts/` keep everything running unattended:
 
-- `scripts/run_paper.ps1` — a keeper that runs `paper run --interval 3600` in
-  an endless supervision loop (60s backoff on exit) and appends all output to
+- `scripts/run_paper.ps1` — a keeper that runs `quant-lab serve` in an endless
+  supervision loop (60s backoff on exit), appending output to
   `data\paper_run.log`.
 - `scripts/install_autostart.ps1` — registers a Windows Scheduled Task
   ("Heehaws Lab Paper Trading") that launches the keeper hidden at every
-  logon, and starts it immediately.
+  logon, starts it immediately, and drops a dashboard shortcut on the desktop.
 
 Install from an **administrator** PowerShell in `quant-lab`:
 

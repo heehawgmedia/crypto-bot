@@ -107,6 +107,21 @@ systemd service). It's restart-safe: stop and start it freely, state is in
 SQLite. Watch progress with `quant-lab status` and
 `quant-lab paper status -s <yaml>`.
 
+### Better: run it with the dashboard
+
+```bash
+quant-lab serve --open
+```
+
+Same trading loop, plus a live dashboard at http://127.0.0.1:8787 showing
+every trade, the PnL charts, the vault, and a **Start/Stop** switch. Leave it
+running and open that URL whenever you want to check in.
+
+**Stop halts new entries only** — anything you already hold keeps its
+stop-loss, take-profit, and signal exit, so stopping can never leave a
+position unmanaged. The switch is stored in the database, so a bot you
+stopped stays stopped through restarts and reboots until you press Start.
+
 **On Windows, make it survive reboots** — one command from an
 *administrator* PowerShell in `quant-lab`:
 
@@ -114,10 +129,11 @@ SQLite. Watch progress with `quant-lab status` and
 powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
 ```
 
-This registers a Scheduled Task that runs the fleet hidden at every logon,
-restarts it if it crashes, and logs to `data\paper_run.log`. Uninstall by
-re-running with `-Remove`. Once installed, you can close your manual
-`paper run` window — the task has it covered.
+This registers a Scheduled Task that runs `quant-lab serve` hidden at every
+logon, restarts it if it crashes, logs to `data\paper_run.log`, and puts a
+"Heehaw's Lab" shortcut on your desktop. Uninstall by re-running with
+`-Remove`. Once installed, you can close your manual `paper run` window —
+the task has it covered.
 
 Optional alerts to your phone: create a Telegram bot (@BotFather), put the
 token and your chat id in `.env` (see `.env.example`), and set

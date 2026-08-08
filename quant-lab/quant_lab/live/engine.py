@@ -232,6 +232,17 @@ class LiveEngine:
                 return self._sell(units, last_price, bar_time, "signal exit (kill switch active)")
             return LiveStep(False, None, f"halted by kill switch: {tripped_reason}")
 
+        if not self._audit.trading_enabled():
+            # Manual pause from the dashboard or CLI. Like a kill-switch trip
+            # it stops new entries and nothing else: an open position keeps
+            # its stop, its target, and its signal exit.
+            if units > 0.0 and trigger is not None:
+                self._arm_cooldown(bar_time)
+                return self._sell(units, last_price, bar_time, trigger)
+            if units > 0.0 and signal == 0:
+                return self._sell(units, last_price, bar_time, "signal exit (paused)")
+            return LiveStep(False, None, "paused by owner: new entries halted")
+
         if units > 0.0 and trigger is not None:
             self._arm_cooldown(bar_time)
             return self._sell(units, last_price, bar_time, trigger)

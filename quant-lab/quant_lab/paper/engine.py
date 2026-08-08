@@ -127,7 +127,13 @@ class PaperEngine:
             elif signal == 0:
                 side, detail = self._sell(s, last_close, "signal")
         elif signal == 1 and s.armed and self._cooldown_over(s, bar_time):
-            side, detail = self._buy(s, last_close)
+            # A manual pause halts NEW ENTRIES only (same rule as a kill-switch
+            # trip). The bar is still marked processed, so resuming never
+            # back-fills an entry the owner was not there for.
+            if self._audit.trading_enabled():
+                side, detail = self._buy(s, last_close)
+            else:
+                detail = "paused: entry skipped"
 
         self._audit.set_paper_state(
             self._scfg.name,

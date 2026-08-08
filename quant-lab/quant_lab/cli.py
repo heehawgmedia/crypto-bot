@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -16,8 +17,15 @@ from quant_lab.data.fetcher import OhlcvFetcher, make_ccxt_client
 from quant_lab.data.integrity import check_ohlcv
 from quant_lab.data.store import ParquetStore
 from quant_lab.data.timeframes import timeframe_to_ms
-from quant_lab.paper.engine import PaperEngine
+from quant_lab.paper.runner import (
+    FleetMember,
+    build_fleet,
+    discover_strategies,
+    poll_fleet,
+    run_fleet_loop,
+)
 from quant_lab.reporting.metrics import compute_metrics
+from quant_lab.reporting.status import bot_status
 from quant_lab.reporting.tearsheet import render_tearsheet
 from quant_lab.risk.killswitch import KillSwitchMonitor
 from quant_lab.strategies import build_strategy
@@ -534,28 +542,15 @@ def promote_live(
     )
 
 
-def _refresh_and_read(
-    cfg: AppConfig, scfg: StrategyInstanceConfig
-) -> pd.DataFrame:
-    """Fetch the newest bars for the strategy's market and return the frame.
+def _refresh_and_read(cfg: AppConfig, scfg: StrategyInstanceConfig) -> pd.DataFrame:
+    """Fetch the newest bars for the strategy's market and return the frame."""
+    from quant_lab.data.refresh import refresh_and_read
 
-    The fetcher stores only closed candles, so the last row is always a
-    completed bar — safe to compute signals on."""
-    from quant_lab.data.resample import derive_timeframe, pick_source
+    return refresh_and_read(cfg, scfg)
 
-    source = scfg.data_source
-    client = make_ccxt_client(source, cfg.exchanges[source].rate_limit_ms)
-    store = ParquetStore(cfg.data.parquet_dir)
-    fetcher = OhlcvFetcher(client, store, source)
-    start = pd.Timestamp(cfg.data.start_date, tz="UTC")
-    try:
-        fetcher.update(scfg.symbol, scfg.timeframe, start)
-    except Exception:  # noqa: BLE001 - timeframe unsupported: derive from finer bars
-        src = pick_source(cfg.data.timeframes, scfg.timeframe)
-        if src is not None:
-            fetcher.update(scfg.symbol, src, start)
-            derive_timeframe(store, source, scfg.symbol, src, scfg.timeframe)
-    return store.read(source, scfg.symbol, scfg.timeframe)
+
+def _warn(message: str) -> None:
+    typer.secho(message, fg=typer.colors.YELLOW, err=True)
 
 
 @paper_app.command("run")
@@ -584,82 +579,66 @@ def paper_run(
 
     cfg = _load(config)
     audit = _open_audit(cfg)
+    fleet = _build_paper_fleet(cfg, audit, strategy, strategies_dir)
 
+    typer.echo(
+        f"paper trading {len(fleet)} strateg{'y' if len(fleet) == 1 else 'ies'}: "
+        + ", ".join(m.scfg.name for m in fleet)
+    )
+    if not audit.trading_enabled():
+        typer.secho(
+            "trading is PAUSED — no new entries will be taken (open positions still exit "
+            "on their rules). Resume with `quant-lab resume` or the dashboard.",
+            fg=typer.colors.YELLOW,
+        )
+    while True:
+        poll_fleet(
+            cfg,
+            audit,
+            fleet,
+            emit=typer.echo,
+            warn=lambda m: typer.secho(m, fg=typer.colors.YELLOW),
+            interval_s=float(interval),
+            refresh=_refresh_and_read,
+            raise_on_error=once,
+        )
+        if once:
+            break
+        time.sleep(interval)
+
+
+def _build_paper_fleet(
+    cfg: AppConfig,
+    audit: AuditLog,
+    strategy: Path | None,
+    strategies_dir: Path,
+) -> list[FleetMember]:
+    """Resolve the fleet for `paper run` / `serve`, or exit with a clear reason."""
     if strategy is not None:
         candidates = [load_strategy_config(strategy)]
         required = True
     else:
-        candidates = []
+        candidates = discover_strategies(strategies_dir, warn=_warn)
         required = False
-        if strategies_dir.is_dir():
-            for path in sorted(strategies_dir.glob("*.yaml")):
-                try:
-                    candidates.append(load_strategy_config(path))
-                except Exception as exc:  # noqa: BLE001 - skip malformed YAMLs
-                    typer.secho(f"skipping {path.name}: {exc}", fg=typer.colors.YELLOW, err=True)
 
-    engines: list[tuple[StrategyInstanceConfig, PaperEngine]] = []
-    alerter = alerter_from_config(cfg.alerts)
-    for scfg in candidates:
-        stage = audit.get_stage(scfg.name)
-        if stage not in ("paper", "live"):
-            if required:
-                typer.secho(
-                    f"{scfg.name} is at stage {stage!r}; run `quant-lab validate run` then "
-                    "`quant-lab promote paper` first",
-                    fg=typer.colors.RED,
-                    err=True,
-                )
-                raise typer.Exit(code=1)
-            continue
-        cost = CostModel(
-            taker_fee_bps=cfg.exchanges[scfg.exchange].taker_fee_bps,
-            slippage_bps=cfg.backtest.slippage_bps,
+    fleet, skipped = build_fleet(cfg, audit, candidates)
+    if required and skipped:
+        scfg, stage = skipped[0]
+        typer.secho(
+            f"{scfg.name} is at stage {stage!r}; run `quant-lab validate run` then "
+            "`quant-lab promote paper` first",
+            fg=typer.colors.RED,
+            err=True,
         )
-        engines.append(
-            (
-                scfg,
-                PaperEngine(
-                    scfg, cost, audit, cfg.backtest.initial_capital_usd, alerter,
-                    vault=cfg.vault,
-                ),
-            )
-        )
-
-    if not engines:
+        raise typer.Exit(code=1)
+    if not fleet:
         typer.secho(
             "no paper-stage strategies found; promote one with `quant-lab promote paper`",
             fg=typer.colors.RED,
             err=True,
         )
         raise typer.Exit(code=1)
-
-    typer.echo(f"paper trading {len(engines)} strateg{'y' if len(engines) == 1 else 'ies'}: "
-               + ", ".join(s.name for s, _ in engines))
-    while True:
-        for scfg, engine in engines:
-            try:
-                df = _refresh_and_read(cfg, scfg)
-                if df.empty:
-                    typer.secho(
-                        f"{scfg.name}: no data returned from exchange", fg=typer.colors.YELLOW
-                    )
-                else:
-                    step = engine.step(df)
-                    typer.echo(
-                        f"{step.bar_time}  {scfg.name}  equity ${step.equity_usd:,.2f}  "
-                        f"{step.detail}"
-                    )
-            except Exception as exc:
-                if once:
-                    raise
-                typer.secho(
-                    f"{scfg.name}: poll failed, retrying next cycle: {exc}",
-                    fg=typer.colors.YELLOW,
-                )
-        if once:
-            break
-        time.sleep(interval)
+    return fleet
 
 
 @paper_app.command("status")
@@ -909,8 +888,9 @@ def setup(config: ConfigOpt = DEFAULT_CONFIG) -> None:
     typer.echo("  validate a strategy (the only path toward live trading):")
     for path in yamls:
         typer.echo(f"    quant-lab validate run -s {path}")
-    typer.echo("  then: quant-lab promote paper -s <yaml>  ->  quant-lab paper run -s <yaml>")
-    typer.echo("  check progress any time with: quant-lab status")
+    typer.echo("  then: quant-lab promote paper -s <yaml>  ->  quant-lab serve")
+    typer.echo("  watch it any time at http://127.0.0.1:8787 (quant-lab serve --open)")
+    typer.echo("  or from a terminal: quant-lab status")
     if not all_ok:
         typer.secho(
             "note: some datasets have integrity issues (see [2/3]); validation "
@@ -932,9 +912,14 @@ def status(
     cfg = _load(config)
     audit = _open_audit(cfg)
     tripped, reason, _ = audit.kill_switch_state()
+    status = bot_status(audit)
     typer.echo(f"mode: {cfg.mode.value}")
     cap = cfg.risk.max_capital_usd
     typer.echo(f"capital cap: {'NOT SET' if cap is None else f'${cap:,.2f}'}")
+    typer.secho(
+        f"bot: {status.label} — {status.detail}",
+        fg=typer.colors.GREEN if status.tone == "good" else typer.colors.YELLOW,
+    )
     typer.echo(f"kill switch: {'TRIPPED — ' + str(reason) if tripped else 'armed'}")
     typer.echo("")
 
@@ -1171,11 +1156,193 @@ def dashboard(
                 continue
     written = write_dashboard(cfg, audit, strategies, out)
     typer.secho(f"dashboard written to {written}", fg=typer.colors.GREEN)
-    typer.echo("re-run this command any time to refresh it with the latest data")
+    typer.echo(
+        "this is a static snapshot — run `quant-lab serve` for a live dashboard "
+        "with start/stop buttons"
+    )
     if open_browser:
         import webbrowser
 
         webbrowser.open(written.resolve().as_uri())
+
+
+def _fleet_worker(
+    cfg: AppConfig,
+    strategies_dir: Path,
+    interval_s: float,
+    stop: threading.Event,
+) -> None:
+    """The paper loop as run by `serve`, on its own thread and its own
+    database connection."""
+    audit = AuditLog(cfg.audit.sqlite_path)
+    try:
+        fleet = _build_paper_fleet(cfg, audit, None, strategies_dir)
+        run_fleet_loop(
+            cfg,
+            audit,
+            fleet,
+            interval_s=interval_s,
+            emit=typer.echo,
+            warn=lambda m: typer.secho(m, fg=typer.colors.YELLOW),
+            stop=stop,
+            refresh=_refresh_and_read,
+        )
+    except Exception as exc:  # noqa: BLE001 - a dead worker must say so, not vanish
+        typer.secho(
+            f"paper fleet stopped: {exc}. The dashboard is still up; restart "
+            "`quant-lab serve` to resume trading.",
+            fg=typer.colors.RED,
+        )
+    finally:
+        audit.close()
+
+
+@app.command("serve")
+def serve(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    host: Annotated[
+        str | None, typer.Option(help="Bind address (default: config dashboard.host)")
+    ] = None,
+    port: Annotated[
+        int | None, typer.Option(help="Port (default: config dashboard.port)")
+    ] = None,
+    strategies_dir: Annotated[
+        Path, typer.Option(help="Directory of strategy YAMLs")
+    ] = Path("config/strategies"),
+    interval: Annotated[int, typer.Option(help="Poll interval in seconds")] = 60,
+    trade: Annotated[
+        bool, typer.Option("--trade/--no-trade", help="Also run the paper fleet in this process")
+    ] = True,
+    open_browser: Annotated[
+        bool, typer.Option("--open", help="Open the dashboard in your browser")
+    ] = False,
+) -> None:
+    """Serve the live dashboard and run the paper fleet in one process.
+
+    The page re-renders from the database on every request and carries Start
+    and Stop buttons. Stop halts new entries only: open positions keep their
+    stop-loss, take-profit, and signal exits. The switch is durable, so a
+    stopped bot stays stopped across restarts and reboots.
+    """
+    import webbrowser
+
+    from quant_lab.server import make_server, server_url
+
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    bind_host = host if host is not None else cfg.dashboard.host
+    bind_port = port if port is not None else cfg.dashboard.port
+    strategies = discover_strategies(strategies_dir, warn=_warn)
+
+    try:
+        httpd = make_server(
+            cfg,
+            strategies,
+            lambda: AuditLog(cfg.audit.sqlite_path),
+            host=bind_host,
+            port=bind_port,
+        )
+    except OSError as exc:
+        typer.secho(
+            f"cannot bind {bind_host}:{bind_port} ({exc}). If Heehaw's Lab is already "
+            f"running, just open http://{bind_host}:{bind_port}/ — otherwise pick another "
+            "port with --port.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    if bind_host not in ("127.0.0.1", "localhost", "::1"):
+        typer.secho(
+            f"WARNING: binding {bind_host} exposes the dashboard beyond this machine. "
+            "Anyone who can load the page can stop or start your bot.",
+            fg=typer.colors.RED,
+        )
+
+    stop = threading.Event()
+    worker: threading.Thread | None = None
+    if trade:
+        # Resolve the fleet here so a bad setup fails loudly with an exit code
+        # instead of dying inside a thread; the worker then builds its own,
+        # because SQLite handles belong to the thread that opened them.
+        preview = _build_paper_fleet(cfg, audit, None, strategies_dir)
+        typer.echo(
+            f"paper trading {len(preview)} strateg{'y' if len(preview) == 1 else 'ies'}: "
+            + ", ".join(m.scfg.name for m in preview)
+        )
+        worker = threading.Thread(
+            target=_fleet_worker,
+            args=(cfg, strategies_dir, float(interval), stop),
+            name="paper-fleet",
+            daemon=True,
+        )
+        worker.start()
+    else:
+        typer.secho("--no-trade: serving the dashboard only, not trading", fg=typer.colors.YELLOW)
+
+    url = server_url(httpd)
+    typer.secho(f"dashboard: {url}", fg=typer.colors.GREEN)
+    if not audit.trading_enabled():
+        typer.secho(
+            "trading is currently STOPPED — press Start on the dashboard to resume",
+            fg=typer.colors.YELLOW,
+        )
+    typer.echo("Ctrl+C to shut down.")
+    if open_browser:
+        webbrowser.open(url)
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("")
+    finally:
+        stop.set()
+        httpd.shutdown()
+        httpd.server_close()
+        if worker is not None:
+            worker.join(timeout=5.0)
+        typer.echo("dashboard stopped. The run switch is unchanged.")
+
+
+@app.command("pause")
+def pause(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    reason: Annotated[str | None, typer.Option(help="Why (recorded in the audit trail)")] = None,
+) -> None:
+    """Stop opening NEW positions, in paper and live.
+
+    Open positions are still managed: stop-loss, take-profit, and signal exits
+    keep firing, so pausing can never strand a position without its risk
+    controls. The setting is durable — it survives restarts and reboots.
+    """
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    changed = audit.set_trading_enabled(False, actor="cli", reason=reason)
+    typer.secho(
+        "trading PAUSED — no new entries." if changed else "trading was already paused.",
+        fg=typer.colors.YELLOW,
+    )
+    typer.echo("Open positions still exit on their stop/target/signal rules.")
+    typer.echo("Resume with `quant-lab resume`.")
+
+
+@app.command("resume")
+def resume(config: ConfigOpt = DEFAULT_CONFIG) -> None:
+    """Allow new entries again (undoes `quant-lab pause`)."""
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    changed = audit.set_trading_enabled(True, actor="cli")
+    typer.secho(
+        "trading RESUMED." if changed else "trading was already running.",
+        fg=typer.colors.GREEN,
+    )
+    status = bot_status(audit)
+    if not status.running:
+        typer.secho(
+            f"note: no trading loop is polling ({status.detail}). Start one with "
+            "`quant-lab serve`.",
+            fg=typer.colors.YELLOW,
+        )
 
 
 @audit_app.command("events")

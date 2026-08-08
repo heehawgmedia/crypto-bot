@@ -9,11 +9,14 @@ drift apart.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import socket
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -102,6 +105,29 @@ CREATE TABLE IF NOT EXISTS config_state (
     updated_utc TEXT NOT NULL
 );
 
+-- Manual run switch, flipped from the dashboard or the CLI. Durable on
+-- purpose: a bot stopped by its owner stays stopped across restarts and
+-- reboots, exactly like the kill-switch latch.
+CREATE TABLE IF NOT EXISTS run_control (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    trading_enabled INTEGER NOT NULL DEFAULT 1,
+    changed_utc TEXT,
+    changed_by TEXT,
+    reason TEXT
+);
+INSERT OR IGNORE INTO run_control (id, trading_enabled) VALUES (1, 1);
+
+-- Liveness: each poll of a trading loop stamps this row, so any reader can
+-- tell whether a bot is actually running rather than merely configured to.
+CREATE TABLE IF NOT EXISTS heartbeat (
+    scope TEXT PRIMARY KEY,         -- paper | live
+    ts_utc TEXT NOT NULL,
+    pid INTEGER,
+    host TEXT,
+    interval_s REAL,
+    detail TEXT
+);
+
 -- Vault: profit skimmed out of trading capital. Balance is the sum of skims
 -- minus withdrawals and redistributions; the ledger is append-only.
 CREATE TABLE IF NOT EXISTS vault_ledger (
@@ -155,6 +181,13 @@ class AuditLog:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
+        # The dashboard server reads this database from its request threads
+        # while a trading loop writes to it from another. WAL lets those
+        # overlap; the busy timeout turns a momentary write lock into a short
+        # wait instead of a "database is locked" crash mid-trade.
+        with contextlib.suppress(sqlite3.DatabaseError):
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.executescript(_SCHEMA)
         for table, column, ddl in _MIGRATIONS:
             existing = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
@@ -487,3 +520,75 @@ class AuditLog:
         )
         self._conn.commit()
         self.record("kill_switch_reset", {"confirmed_by": confirmed_by})
+
+    # -- manual run switch (dashboard / CLI) -------------------------------
+
+    def run_control(self) -> tuple[bool, str | None, str | None]:
+        """(trading_enabled, changed_utc, reason)."""
+        row = self._conn.execute("SELECT * FROM run_control WHERE id = 1").fetchone()
+        if row is None:  # pragma: no cover - the schema seeds this row
+            return True, None, None
+        return bool(row["trading_enabled"]), row["changed_utc"], row["reason"]
+
+    def trading_enabled(self) -> bool:
+        return self.run_control()[0]
+
+    def set_trading_enabled(
+        self, enabled: bool, *, actor: str, reason: str | None = None
+    ) -> bool:
+        """Pause or resume new entries. Returns True if the state changed.
+
+        This never touches open positions: the trading loops keep honouring
+        stop-loss, take-profit, and signal exits while paused, so pausing can
+        never strand a position without its risk controls.
+        """
+        changed = self.trading_enabled() != enabled
+        self._conn.execute(
+            "UPDATE run_control SET trading_enabled = ?, changed_utc = ?, changed_by = ?,"
+            " reason = ? WHERE id = 1",
+            (int(enabled), _now_iso(), actor, reason),
+        )
+        self._conn.commit()
+        if changed:
+            self.record(
+                "trading_resumed" if enabled else "trading_paused",
+                {"actor": actor, "reason": reason},
+            )
+        return changed
+
+    # -- liveness ----------------------------------------------------------
+
+    def beat(self, scope: str, *, interval_s: float | None = None, detail: str = "") -> None:
+        """Stamp the heartbeat for a trading loop ('paper' or 'live')."""
+        self._conn.execute(
+            "INSERT INTO heartbeat (scope, ts_utc, pid, host, interval_s, detail)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(scope) DO UPDATE SET ts_utc = excluded.ts_utc, pid = excluded.pid,"
+            " host = excluded.host, interval_s = excluded.interval_s, detail = excluded.detail",
+            (scope, _now_iso(), os.getpid(), socket.gethostname(), interval_s, detail),
+        )
+        self._conn.commit()
+
+    def heartbeat(self, scope: str) -> sqlite3.Row | None:
+        row = self._conn.execute("SELECT * FROM heartbeat WHERE scope = ?", (scope,)).fetchone()
+        return cast("sqlite3.Row | None", row)
+
+    def heartbeat_age_s(self, scope: str, now: datetime | None = None) -> float | None:
+        """Seconds since the loop last polled, or None if it never has."""
+        row = self.heartbeat(scope)
+        if row is None:
+            return None
+        seen = datetime.fromisoformat(str(row["ts_utc"]))
+        return max(0.0, ((now or datetime.now(UTC)) - seen).total_seconds())
+
+    def revision(self) -> int:
+        """Cheap change counter: bumps whenever anything user-visible lands.
+
+        The dashboard polls this to decide when a reload would show something
+        new, instead of reloading on a timer and fighting the reader.
+        """
+        row = self._conn.execute(
+            "SELECT (SELECT COUNT(*) FROM fills) + (SELECT COUNT(*) FROM orders)"
+            " + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM vault_ledger) AS n"
+        ).fetchone()
+        return int(row["n"])

@@ -129,6 +129,18 @@ class AuditConfig(_StrictModel):
     sqlite_path: Path = Path("data/quantlab.db")
 
 
+class DashboardConfig(_StrictModel):
+    """Local dashboard server (``quant-lab serve``).
+
+    The default host is loopback on purpose: the server can pause and resume
+    trading, so it must not be reachable from the network unless the owner
+    deliberately changes this.
+    """
+
+    host: str = "127.0.0.1"
+    port: int = Field(default=8787, ge=1, le=65535)
+
+
 class AppConfig(_StrictModel):
     mode: Mode = Mode.PAPER
     exchanges: dict[str, ExchangeConfig]
@@ -140,6 +152,7 @@ class AppConfig(_StrictModel):
     vault: VaultConfig = VaultConfig()
     alerts: AlertsConfig = AlertsConfig()
     audit: AuditConfig = AuditConfig()
+    dashboard: DashboardConfig = DashboardConfig()
 
     @model_validator(mode="after")
     def _live_requires_capital_cap(self) -> AppConfig:
