@@ -1,8 +1,8 @@
-name: trend_regime_btc_1d
+name: trend_regime_eth_1d
 strategy: trend_regime
 exchange: kraken          # orders execute here (kraken fees apply)
 data_exchange: coinbase   # deep OHLCV history comes from here
-symbol: BTC/USD
+symbol: ETH/USD
 timeframe: 1d
 params:
   regime_len: 200

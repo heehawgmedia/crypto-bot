@@ -18,7 +18,8 @@ data:
   exchange: coinbase
   symbols: [BTC/USD, ETH/USD]
   timeframes: [1h, 4h, 1d]
-  start_date: "2019-01-01"
+  start_date: "2016-01-01"     # coinbase serves BTC/USD from ~2015, ETH/USD from ~2016;
+                               # more history = more out-of-sample evidence for slow strategies
   parquet_dir: data/parquet
   max_gap_bars: 3
 
