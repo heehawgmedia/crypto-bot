@@ -1,0 +1,44 @@
+{
+  "resume": "./assets/resume.pdf",
+  "coverLetter": "./assets/cover-letter.pdf",
+
+  "personal": {
+    "firstName": "Jane",
+    "lastName": "Doe",
+    "email": "heehawgmedia@gmail.com",
+    "phone": "+1 555 123 4567",
+    "location": "Austin, TX, USA",
+    "linkedin": "https://www.linkedin.com/in/janedoe",
+    "github": "https://github.com/janedoe",
+    "website": "https://janedoe.dev"
+  },
+
+  "eeo": {
+    "workAuthorizedUS": true,
+    "requiresSponsorship": false,
+    "veteranStatus": "I am not a protected veteran",
+    "disabilityStatus": "No, I do not have a disability",
+    "gender": "Decline to self-identify",
+    "race": "Decline to self-identify",
+    "hispanicLatino": "Decline to self-identify"
+  },
+
+  "search": {
+    "keywords": ["software engineer", "backend", "typescript", "node"],
+    "excludeKeywords": ["staff", "principal", "intern", "clearance"],
+    "locations": ["remote", "austin"],
+    "remoteOnly": true,
+    "minScore": 2,
+    "greenhouseBoards": ["stripe", "cloudflare", "discord"],
+    "leverCompanies": ["plaid", "ramp"],
+    "useRemoteOK": true
+  },
+
+  "answers": {
+    "salary": "Negotiable / market rate",
+    "startDate": "2 weeks from offer",
+    "howDidYouHear": "Company website",
+    "whyThisCompany": "I admire the product and the engineering culture, and my background is a strong match for this role.",
+    "yearsOfExperience": "5"
+  }
+}

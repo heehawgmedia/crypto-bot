@@ -1,0 +1,21 @@
+{
+  "name": "auto-apply",
+  "version": "1.0.0",
+  "description": "Job application assistant: finds matching jobs, auto-fills applications from your resume/profile, tracks everything applied to",
+  "type": "module",
+  "bin": {
+    "auto-apply": "./src/cli.js"
+  },
+  "scripts": {
+    "search": "node src/cli.js search",
+    "review": "node src/cli.js review",
+    "apply": "node src/cli.js apply",
+    "status": "node src/cli.js status"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
