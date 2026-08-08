@@ -28,7 +28,10 @@ from quant_lab.validation.gates import (
 )
 from quant_lab.validation.walkforward import run_walkforward
 
-app = typer.Typer(no_args_is_help=True, help="Crypto strategy research and execution pipeline.")
+app = typer.Typer(
+    no_args_is_help=True,
+    help="Heehaw's Lab — crypto strategy research and execution pipeline.",
+)
 data_app = typer.Typer(no_args_is_help=True, help="Fetch, update, and verify OHLCV data.")
 backtest_app = typer.Typer(no_args_is_help=True, help="Run in-sample backtests (research only).")
 validate_app = typer.Typer(no_args_is_help=True, help="Walk-forward validation (the only promotion path).")

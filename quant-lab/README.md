@@ -1,4 +1,6 @@
-# quant-lab
+# Heehaw's Lab
+
+*(package/command name: `quant-lab`)*
 
 Crypto strategy research and execution pipeline: idea → backtest → walk-forward
 validation → paper trading → capital-capped live trading, with hard promotion

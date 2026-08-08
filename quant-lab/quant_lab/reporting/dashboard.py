@@ -348,7 +348,7 @@ def render_dashboard(
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>quant-lab dashboard</title>
+<title>Heehaw&#39;s Lab</title>
 <style>
 :root {{
   color-scheme: light dark;
@@ -430,7 +430,7 @@ code {{ background: var(--surface); border: 1px solid var(--border);
        border-radius: 5px; padding: 1px 6px; font-size: 12px; }}
 </style></head><body>
 <div class="header">
-  <h1>quant-lab</h1>
+  <h1>Heehaw&#39;s Lab</h1>
   <div class="meta">mode <strong>{cfg.mode.value}</strong>
    · capital cap <strong>{_money(cap) if cap is not None else "not set"}</strong>
    · generated {generated}</div>

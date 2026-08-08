@@ -319,7 +319,7 @@ def test_vault_cli_and_dashboard(workspace: Path) -> None:
     result = runner.invoke(app, ["dashboard", "--out", "data/dash.html"])
     assert result.exit_code == 0, result.output
     html_out = (workspace / "data" / "dash.html").read_text(encoding="utf-8")
-    assert "quant-lab" in html_out
+    assert "Heehaw" in html_out
     assert "Vault" in html_out
     assert "cli_flow_test" in html_out          # trade row present
     assert "Cumulative realized PnL" in html_out

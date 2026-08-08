@@ -1,4 +1,4 @@
-# Getting started — from zero to a running pipeline
+# Heehaw's Lab — getting started from zero
 
 This is the "I don't know where to start" guide. Do these steps in order on
 the computer that will run the bot (it needs to stay on during paper/live
