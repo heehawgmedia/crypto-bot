@@ -19,7 +19,7 @@ import pandas as pd
 from quant_lab.alerts import Alerter, NullAlerter
 from quant_lab.audit.log import AuditLog
 from quant_lab.backtest.engine import CostModel
-from quant_lab.config import StrategyInstanceConfig
+from quant_lab.config import StrategyInstanceConfig, VaultConfig
 from quant_lab.data.timeframes import timeframe_to_ms
 from quant_lab.risk.stops import TradeRules
 from quant_lab.strategies import build_strategy
@@ -42,6 +42,7 @@ class _State:
     entry_price: float | None
     armed: bool
     cooldown_until: str | None
+    entry_cost: float | None
 
 
 class PaperEngine:
@@ -52,6 +53,7 @@ class PaperEngine:
         audit: AuditLog,
         initial_capital_usd: float,
         alerter: Alerter | None = None,
+        vault: VaultConfig | None = None,
     ) -> None:
         self._scfg = scfg
         self._strategy = build_strategy(scfg.strategy, scfg.params)
@@ -61,11 +63,12 @@ class PaperEngine:
         self._alerter = alerter or NullAlerter()
         self._rules = TradeRules.from_strategy(scfg)
         self._bar_ms = timeframe_to_ms(scfg.timeframe)
+        self._vault = vault or VaultConfig()
 
     def _state(self) -> _State:
         row = self._audit.get_paper_state(self._scfg.name)
         if row is None:
-            return _State(self._initial, 0.0, None, None, True, None)
+            return _State(self._initial, 0.0, None, None, True, None, None)
         return _State(
             cash=float(row["cash_usd"]),
             units=float(row["units"]),
@@ -73,6 +76,9 @@ class PaperEngine:
             entry_price=float(row["entry_price"]) if row["entry_price"] is not None else None,
             armed=bool(row["reentry_armed"]),
             cooldown_until=row["cooldown_until_utc"],
+            entry_cost=(
+                float(row["entry_cost_usd"]) if row["entry_cost_usd"] is not None else None
+            ),
         )
 
     def equity(self, last_price: float) -> float:
@@ -131,6 +137,7 @@ class PaperEngine:
             entry_price=s.entry_price,
             reentry_armed=s.armed,
             cooldown_until_utc=s.cooldown_until,
+            entry_cost_usd=s.entry_cost,
         )
         return PaperStep(side is not None, bar_time, side, s.cash + s.units * last_close, detail)
 
@@ -142,6 +149,7 @@ class PaperEngine:
         fee_usd = s.cash * self._cost.fee
         s.units = s.cash * (1.0 - self._cost.fee) / fill_price
         qty = s.units
+        s.entry_cost = s.cash  # full cash deployed, fees included
         s.cash = 0.0
         s.entry_price = fill_price
         self._record("buy", qty, last_close, fill_price, fee_usd, reason=None)
@@ -155,8 +163,26 @@ class PaperEngine:
         s.cash = proceeds * (1.0 - self._cost.fee)
         s.units = 0.0
         s.entry_price = None
-        self._record("sell", qty, last_close, fill_price, fee_usd, reason=reason)
-        return "sell", f"sold {qty:.8f} @ {fill_price:.2f} (fee ${fee_usd:.2f}) [{reason}]"
+
+        skim_note = ""
+        realized = s.cash - s.entry_cost if s.entry_cost is not None else 0.0
+        s.entry_cost = None
+        order_id = self._record("sell", qty, last_close, fill_price, fee_usd, reason=reason)
+        if self._vault.enabled and realized > 0.0:
+            skim = realized * self._vault.skim_pct / 100.0
+            s.cash -= skim
+            self._audit.vault_credit(
+                skim,
+                strategy=self._scfg.name,
+                mode="paper",
+                ref_order_id=order_id,
+                note=f"{self._vault.skim_pct}% of ${realized:,.2f} win",
+            )
+            skim_note = f", ${skim:,.2f} skimmed to vault"
+        return (
+            "sell",
+            f"sold {qty:.8f} @ {fill_price:.2f} (fee ${fee_usd:.2f}) [{reason}]{skim_note}",
+        )
 
     def _record(
         self,
@@ -166,7 +192,7 @@ class PaperEngine:
         fill_price: float,
         fee_usd: float,
         reason: str | None,
-    ) -> None:
+    ) -> int:
         order_id = self._audit.record_order(
             mode="paper",
             strategy=self._scfg.name,
@@ -193,3 +219,4 @@ class PaperEngine:
             f"[paper] {self._scfg.name}: {side} {qty:.8f} {self._scfg.symbol} "
             f"@ {fill_price:.2f}, fee ${fee_usd:.2f}{why}"
         )
+        return order_id

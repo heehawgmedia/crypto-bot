@@ -71,6 +71,12 @@ quant-lab live run -s config/strategies/ema_cross_btc.yaml
 quant-lab risk status
 quant-lab risk reset                  # the only way to re-enable after a trip
 
+# Dashboard + vault
+quant-lab dashboard --open            # modern HTML dashboard: trades, PnL charts, vault, events
+quant-lab vault status                # 15% of each winning trade lands here (config: vault.skim_pct)
+quant-lab vault withdraw --amount 100      # record taking profit out of the system
+quant-lab vault redistribute --amount 100  # return vault funds to trading capital
+
 # Oversight
 quant-lab status                      # every strategy's stage + paper clock at a glance
 quant-lab live preflight -s <yaml>    # read-only go-live checklist (keys, rules, data, reconcile)

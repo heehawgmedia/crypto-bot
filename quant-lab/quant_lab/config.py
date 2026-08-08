@@ -116,6 +116,15 @@ class AlertsConfig(_StrictModel):
     discord: DiscordConfig = DiscordConfig()
 
 
+class VaultConfig(_StrictModel):
+    """Profit skimming: a slice of each winning trade's net profit is moved
+    out of trading capital into a vault ledger (withdraw or redistribute via
+    the CLI). Applies to paper and live fills; every movement is audited."""
+
+    enabled: bool = False
+    skim_pct: float = Field(default=15.0, gt=0, lt=100)
+
+
 class AuditConfig(_StrictModel):
     sqlite_path: Path = Path("data/quantlab.db")
 
@@ -128,6 +137,7 @@ class AppConfig(_StrictModel):
     walkforward: WalkforwardConfig
     promotion: PromotionConfig = PromotionConfig()
     risk: RiskConfig
+    vault: VaultConfig = VaultConfig()
     alerts: AlertsConfig = AlertsConfig()
     audit: AuditConfig = AuditConfig()
 

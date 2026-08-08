@@ -101,6 +101,19 @@ CREATE TABLE IF NOT EXISTS config_state (
     config_json TEXT NOT NULL,
     updated_utc TEXT NOT NULL
 );
+
+-- Vault: profit skimmed out of trading capital. Balance is the sum of skims
+-- minus withdrawals and redistributions; the ledger is append-only.
+CREATE TABLE IF NOT EXISTS vault_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_utc TEXT NOT NULL,
+    kind TEXT NOT NULL,             -- skim | withdraw | redistribute
+    amount_usd REAL NOT NULL CHECK (amount_usd > 0),
+    strategy TEXT,
+    mode TEXT,                      -- paper | live (skims only)
+    ref_order_id INTEGER,
+    note TEXT
+);
 """
 
 # Additive migrations for databases created before a column existed.
@@ -128,6 +141,8 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
         "cooldown_until_utc",
         "ALTER TABLE live_state ADD COLUMN cooldown_until_utc TEXT",
     ),
+    ("paper_state", "entry_cost_usd", "ALTER TABLE paper_state ADD COLUMN entry_cost_usd REAL"),
+    ("live_state", "entry_cost_usd", "ALTER TABLE live_state ADD COLUMN entry_cost_usd REAL"),
 ]
 
 
@@ -293,19 +308,21 @@ class AuditLog:
         entry_price: float | None = None,
         reentry_armed: bool = True,
         cooldown_until_utc: str | None = None,
+        entry_cost_usd: float | None = None,
     ) -> None:
         self._conn.execute(
             "INSERT INTO paper_state (strategy, cash_usd, units, last_bar_utc, updated_utc,"
-            " entry_price, reentry_armed, cooldown_until_utc)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            " entry_price, reentry_armed, cooldown_until_utc, entry_cost_usd)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(strategy) DO UPDATE SET cash_usd = excluded.cash_usd,"
             " units = excluded.units, last_bar_utc = excluded.last_bar_utc,"
             " updated_utc = excluded.updated_utc, entry_price = excluded.entry_price,"
             " reentry_armed = excluded.reentry_armed,"
-            " cooldown_until_utc = excluded.cooldown_until_utc",
+            " cooldown_until_utc = excluded.cooldown_until_utc,"
+            " entry_cost_usd = excluded.entry_cost_usd",
             (
                 strategy, cash_usd, units, last_bar_utc, _now_iso(),
-                entry_price, int(reentry_armed), cooldown_until_utc,
+                entry_price, int(reentry_armed), cooldown_until_utc, entry_cost_usd,
             ),
         )
         self._conn.commit()
@@ -329,19 +346,23 @@ class AuditLog:
         entry_price: float | None = None,
         reentry_armed: bool = True,
         cooldown_until_utc: str | None = None,
+        entry_cost_usd: float | None = None,
     ) -> None:
         self._conn.execute(
             "INSERT INTO live_state (strategy, last_bar_utc, day_date, day_start_equity,"
-            " peak_equity, updated_utc, entry_price, reentry_armed, cooldown_until_utc)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " peak_equity, updated_utc, entry_price, reentry_armed, cooldown_until_utc,"
+            " entry_cost_usd)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(strategy) DO UPDATE SET last_bar_utc = excluded.last_bar_utc,"
             " day_date = excluded.day_date, day_start_equity = excluded.day_start_equity,"
             " peak_equity = excluded.peak_equity, updated_utc = excluded.updated_utc,"
             " entry_price = excluded.entry_price, reentry_armed = excluded.reentry_armed,"
-            " cooldown_until_utc = excluded.cooldown_until_utc",
+            " cooldown_until_utc = excluded.cooldown_until_utc,"
+            " entry_cost_usd = excluded.entry_cost_usd",
             (
                 strategy, last_bar_utc, day_date, day_start_equity, peak_equity,
                 _now_iso(), entry_price, int(reentry_armed), cooldown_until_utc,
+                entry_cost_usd,
             ),
         )
         self._conn.commit()
@@ -366,6 +387,85 @@ class AuditLog:
         kind = "config_registered" if previous is None else "config_change"
         self.record(kind, {"old_hash": previous, "new_hash": config_hash})
         return True
+
+    # -- vault -------------------------------------------------------------
+
+    def vault_credit(
+        self,
+        amount_usd: float,
+        *,
+        strategy: str,
+        mode: str,
+        ref_order_id: int | None = None,
+        note: str | None = None,
+    ) -> None:
+        if amount_usd <= 0:
+            raise ValueError("vault credits must be positive")
+        self._conn.execute(
+            "INSERT INTO vault_ledger (ts_utc, kind, amount_usd, strategy, mode,"
+            " ref_order_id, note) VALUES (?, 'skim', ?, ?, ?, ?, ?)",
+            (_now_iso(), amount_usd, strategy, mode, ref_order_id, note),
+        )
+        self._conn.commit()
+        self.record(
+            "vault_skim",
+            {"amount_usd": amount_usd, "mode": mode, "ref_order_id": ref_order_id},
+            strategy=strategy,
+        )
+
+    def vault_debit(self, amount_usd: float, kind: str, note: str | None = None) -> None:
+        if kind not in ("withdraw", "redistribute"):
+            raise ValueError(f"invalid vault debit kind {kind!r}")
+        if amount_usd <= 0:
+            raise ValueError("vault debits must be positive")
+        balance = self.vault_balance()
+        if amount_usd > balance + 1e-9:
+            raise ValueError(
+                f"vault balance is ${balance:,.2f}; cannot {kind} ${amount_usd:,.2f}"
+            )
+        self._conn.execute(
+            "INSERT INTO vault_ledger (ts_utc, kind, amount_usd, note) VALUES (?, ?, ?, ?)",
+            (_now_iso(), kind, amount_usd, note),
+        )
+        self._conn.commit()
+        self.record(f"vault_{kind}", {"amount_usd": amount_usd, "note": note})
+
+    def vault_balance(self) -> float:
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(CASE WHEN kind = 'skim' THEN amount_usd"
+            " ELSE -amount_usd END), 0) AS balance FROM vault_ledger"
+        ).fetchone()
+        return float(row["balance"])
+
+    def vault_totals(self) -> dict[str, float]:
+        totals = {"skim": 0.0, "withdraw": 0.0, "redistribute": 0.0}
+        for row in self._conn.execute(
+            "SELECT kind, COALESCE(SUM(amount_usd), 0) AS total FROM vault_ledger GROUP BY kind"
+        ):
+            totals[str(row["kind"])] = float(row["total"])
+        return totals
+
+    def vault_ledger(self) -> list[sqlite3.Row]:
+        return list(self._conn.execute("SELECT * FROM vault_ledger ORDER BY id"))
+
+    def vault_live_earmark(self) -> float:
+        """Portion of the vault balance that reduces LIVE capital headroom.
+
+        Paper skims are simulated money, so debits (withdraw/redistribute)
+        are attributed to paper skims first; only the remainder releases the
+        live earmark. Conservative: live headroom stays reduced longest.
+        """
+        totals = self.vault_totals()
+        debits = totals["withdraw"] + totals["redistribute"]
+        paper_skims = 0.0
+        for row in self._conn.execute(
+            "SELECT COALESCE(SUM(amount_usd), 0) AS t FROM vault_ledger"
+            " WHERE kind = 'skim' AND mode = 'paper'"
+        ):
+            paper_skims = float(row["t"])
+        live_skims = totals["skim"] - paper_skims
+        debits_hitting_live = max(0.0, debits - paper_skims)
+        return max(0.0, live_skims - debits_hitting_live)
 
     # -- kill switch latch -------------------------------------------------
 

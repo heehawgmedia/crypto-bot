@@ -282,3 +282,45 @@ def test_data_heal_refetches_then_flat_fills(
 
     events = runner.invoke(app, ["audit", "events", "--kind", "gap_fill"])
     assert "gap_fill" in events.output
+
+
+def test_vault_cli_and_dashboard(workspace: Path) -> None:
+    """Vault status/withdraw/redistribute plus dashboard generation."""
+    from quant_lab.audit.log import AuditLog
+
+    audit = AuditLog(workspace / "data" / "quantlab.db")
+    order_id = audit.record_order(
+        mode="paper", strategy="cli_flow_test", exchange="kraken", symbol="BTC/USD",
+        side="buy", qty=1.0, price=100.0, status="filled",
+    )
+    audit.record_fill(order_id=order_id, mode="paper", strategy="cli_flow_test",
+                      symbol="BTC/USD", side="buy", qty=1.0, price=100.0, fee_usd=0.3)
+    sell_id = audit.record_order(
+        mode="paper", strategy="cli_flow_test", exchange="kraken", symbol="BTC/USD",
+        side="sell", qty=1.0, price=150.0, status="filled",
+    )
+    audit.record_fill(order_id=sell_id, mode="paper", strategy="cli_flow_test",
+                      symbol="BTC/USD", side="sell", qty=1.0, price=150.0, fee_usd=0.4)
+    audit.vault_credit(7.40, strategy="cli_flow_test", mode="paper", ref_order_id=sell_id)
+    audit.close()
+
+    result = runner.invoke(app, ["vault", "status"])
+    assert result.exit_code == 0, result.output
+    assert "vault balance: $7.40" in result.output
+
+    result = runner.invoke(app, ["vault", "withdraw", "--amount", "3"])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(app, ["vault", "withdraw", "--amount", "100"])
+    assert result.exit_code == 1  # over balance
+
+    result = runner.invoke(app, ["vault", "redistribute", "--amount", "2"])
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["dashboard", "--out", "data/dash.html"])
+    assert result.exit_code == 0, result.output
+    html_out = (workspace / "data" / "dash.html").read_text(encoding="utf-8")
+    assert "quant-lab" in html_out
+    assert "Vault" in html_out
+    assert "cli_flow_test" in html_out          # trade row present
+    assert "Cumulative realized PnL" in html_out
+    assert "$7.40" in html_out or "7.40" in html_out

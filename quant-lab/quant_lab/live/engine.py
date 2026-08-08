@@ -115,6 +115,7 @@ class LiveEngine:
         self._day_anchor: tuple[str, float] | None = None
         self._peak_equity = 0.0
         self._entry_price: float | None = None
+        self._entry_cost: float | None = None
         self._armed = True
         self._cooldown_until: str | None = None
         state = audit.get_live_state(scfg.name)
@@ -124,6 +125,8 @@ class LiveEngine:
             self._peak_equity = float(state["peak_equity"] or 0.0)
             if state["entry_price"] is not None:
                 self._entry_price = float(state["entry_price"])
+            if state["entry_cost_usd"] is not None:
+                self._entry_cost = float(state["entry_cost_usd"])
             self._armed = bool(state["reentry_armed"])
             self._cooldown_until = state["cooldown_until_utc"]
 
@@ -177,6 +180,7 @@ class LiveEngine:
             entry_price=self._entry_price,
             reentry_armed=self._armed,
             cooldown_until_utc=self._cooldown_until,
+            entry_cost_usd=self._entry_cost,
         )
 
     # -- main loop body ------------------------------------------------------
@@ -267,7 +271,13 @@ class LiveEngine:
 
     def _buy(self, last_price: float, bar_time: pd.Timestamp) -> LiveStep:
         assert self._cfg.risk.max_capital_usd is not None
-        max_capital = self._cfg.risk.max_capital_usd
+        # Skimmed live profit is earmarked for the vault and never redeployed
+        # (until explicitly redistributed via the CLI).
+        max_capital = max(0.0, self._cfg.risk.max_capital_usd - self._audit.vault_live_earmark())
+        if max_capital <= 0.0:
+            return self._reject(
+                "buy", 0.0, last_price, "no deployable capital: vault earmark covers the cap"
+            )
         exposure = self.exposure_usd(last_price)
         decision = size_entry(
             max_capital_usd=max_capital,
@@ -344,12 +354,36 @@ class LiveEngine:
         fill_price = float(response.get("average") or response.get("price") or last_price)
         fill_qty = float(response.get("filled") or qty)
         fee_usd = float((response.get("fee") or {}).get("cost") or 0.0)
-        self._entry_price = fill_price if side == "buy" else None
         self._audit.record_fill(
             order_id=order_id, mode="live", strategy=self._scfg.name,
             symbol=self._scfg.symbol, side=side, qty=fill_qty, price=fill_price,
             fee_usd=fee_usd,
         )
+        if side == "buy":
+            self._entry_price = fill_price
+            self._entry_cost = fill_qty * fill_price + fee_usd
+        else:
+            proceeds_net = fill_qty * fill_price - fee_usd
+            if (
+                self._cfg.vault.enabled
+                and self._entry_cost is not None
+                and proceeds_net > self._entry_cost
+            ):
+                realized = proceeds_net - self._entry_cost
+                skim = realized * self._cfg.vault.skim_pct / 100.0
+                self._audit.vault_credit(
+                    skim,
+                    strategy=self._scfg.name,
+                    mode="live",
+                    ref_order_id=order_id,
+                    note=f"{self._cfg.vault.skim_pct}% of ${realized:,.2f} win",
+                )
+                self._alerter.fill(
+                    f"[LIVE] {self._scfg.name}: ${skim:,.2f} skimmed to vault "
+                    f"({self._cfg.vault.skim_pct}% of ${realized:,.2f} win)"
+                )
+            self._entry_price = None
+            self._entry_cost = None
         self._alerter.fill(
             f"[LIVE] {self._scfg.name}: {side} {fill_qty:.8f} {self._scfg.symbol} "
             f"@ {fill_price:.2f}, fee ${fee_usd:.2f}"

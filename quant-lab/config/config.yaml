@@ -53,6 +53,10 @@ risk:
     max_consecutive_api_errors: 5
     flatten_on_trip: false
 
+vault:
+  enabled: true                 # move a slice of each winning trade's profit out of
+  skim_pct: 15.0                # trading capital into the vault (see: quant-lab vault)
+
 alerts:
   telegram:
     enabled: false              # token/chat id from env: QL_TELEGRAM_BOT_TOKEN / QL_TELEGRAM_CHAT_ID

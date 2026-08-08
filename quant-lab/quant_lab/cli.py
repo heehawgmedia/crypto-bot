@@ -37,6 +37,7 @@ paper_app = typer.Typer(no_args_is_help=True, help="Paper trading on live data, 
 live_app = typer.Typer(no_args_is_help=True, help="Live execution (capital-capped, gated).")
 risk_app = typer.Typer(no_args_is_help=True, help="Kill-switch status and manual reset.")
 audit_app = typer.Typer(no_args_is_help=True, help="Inspect the audit trail.")
+vault_app = typer.Typer(no_args_is_help=True, help="Profit vault: balance, withdraw, redistribute.")
 app.add_typer(data_app, name="data")
 app.add_typer(backtest_app, name="backtest")
 app.add_typer(validate_app, name="validate")
@@ -45,6 +46,7 @@ app.add_typer(paper_app, name="paper")
 app.add_typer(live_app, name="live")
 app.add_typer(risk_app, name="risk")
 app.add_typer(audit_app, name="audit")
+app.add_typer(vault_app, name="vault")
 
 
 def _open_audit(cfg: AppConfig) -> AuditLog:
@@ -581,7 +583,12 @@ def paper_run(
         slippage_bps=cfg.backtest.slippage_bps,
     )
     engine = PaperEngine(
-        scfg, cost, audit, cfg.backtest.initial_capital_usd, alerter_from_config(cfg.alerts)
+        scfg,
+        cost,
+        audit,
+        cfg.backtest.initial_capital_usd,
+        alerter_from_config(cfg.alerts),
+        vault=cfg.vault,
     )
     while True:
         try:
@@ -975,6 +982,147 @@ def live_preflight(
     else:
         typer.secho("preflight FAIL — resolve the failures above", fg=typer.colors.RED)
         raise typer.Exit(code=1)
+
+
+@vault_app.command("status")
+def vault_status(config: ConfigOpt = DEFAULT_CONFIG) -> None:
+    """Vault balance, totals, and the recent ledger."""
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    totals = audit.vault_totals()
+    typer.echo(f"vault balance: ${audit.vault_balance():,.2f}")
+    typer.echo(
+        f"  skimmed ${totals['skim']:,.2f}  withdrawn ${totals['withdraw']:,.2f}  "
+        f"redistributed ${totals['redistribute']:,.2f}"
+    )
+    typer.echo(
+        f"skim: {'ON' if cfg.vault.enabled else 'OFF'} at {cfg.vault.skim_pct:g}% "
+        "of each winning trade's net profit"
+    )
+    for row in audit.vault_ledger()[-15:]:
+        who = f"  [{row['strategy']}]" if row["strategy"] else ""
+        typer.echo(
+            f"  {row['ts_utc'][:16]}  {row['kind']:<12} ${row['amount_usd']:,.2f}{who}"
+            f"  {row['note'] or ''}"
+        )
+
+
+@vault_app.command("withdraw")
+def vault_withdraw(
+    amount: Annotated[float, typer.Option("--amount", "-a", help="USD amount to withdraw")],
+    config: ConfigOpt = DEFAULT_CONFIG,
+) -> None:
+    """Withdraw from the vault (records the debit; audited).
+
+    For live funds this is bookkeeping: after recording, withdraw the actual
+    USD from your exchange account yourself — the bot never has withdrawal
+    permissions by design.
+    """
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    try:
+        audit.vault_debit(amount, "withdraw")
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.secho(
+        f"withdrew ${amount:,.2f} from the vault (balance ${audit.vault_balance():,.2f}). "
+        "If this is live profit, complete the actual USD withdrawal on the exchange "
+        "yourself — the bot's API keys can't (and shouldn't) do it.",
+        fg=typer.colors.GREEN,
+    )
+
+
+@vault_app.command("redistribute")
+def vault_redistribute(
+    amount: Annotated[float, typer.Option("--amount", "-a", help="USD amount to redistribute")],
+    config: ConfigOpt = DEFAULT_CONFIG,
+    strategy: Annotated[
+        Path | None,
+        typer.Option("--strategy", "-s", help="Paper strategy YAML to credit the cash to"),
+    ] = None,
+) -> None:
+    """Return vault funds to trading capital (audited).
+
+    In live mode the freed amount simply re-enters the deployable capital
+    headroom. With --strategy, the amount is also added to that strategy's
+    paper cash balance.
+    """
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    try:
+        audit.vault_debit(amount, "redistribute")
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    if strategy is not None:
+        scfg = load_strategy_config(strategy)
+        state = audit.get_paper_state(scfg.name)
+        if state is None:
+            typer.secho(
+                f"{scfg.name} has no paper state; redistribution recorded but no "
+                "paper cash was credited",
+                fg=typer.colors.YELLOW,
+            )
+        else:
+            audit.set_paper_state(
+                scfg.name,
+                float(state["cash_usd"]) + amount,
+                float(state["units"]),
+                state["last_bar_utc"],
+                entry_price=(
+                    float(state["entry_price"]) if state["entry_price"] is not None else None
+                ),
+                reentry_armed=bool(state["reentry_armed"]),
+                cooldown_until_utc=state["cooldown_until_utc"],
+                entry_cost_usd=(
+                    float(state["entry_cost_usd"])
+                    if state["entry_cost_usd"] is not None
+                    else None
+                ),
+            )
+            typer.echo(f"credited ${amount:,.2f} to {scfg.name}'s paper cash")
+    typer.secho(
+        f"redistributed ${amount:,.2f} back to trading capital "
+        f"(vault balance ${audit.vault_balance():,.2f})",
+        fg=typer.colors.GREEN,
+    )
+
+
+@app.command("dashboard")
+def dashboard(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output HTML path")] = Path(
+        "data/dashboard.html"
+    ),
+    open_browser: Annotated[
+        bool, typer.Option("--open", help="Open the dashboard in your browser")
+    ] = False,
+    strategies_dir: Annotated[
+        Path, typer.Option(help="Directory of strategy YAMLs")
+    ] = Path("config/strategies"),
+) -> None:
+    """Generate the trades + vault dashboard (self-contained HTML, local data only)."""
+    from quant_lab.reporting.dashboard import write_dashboard
+
+    cfg = _load(config)
+    audit = _open_audit(cfg)
+    strategies: list[StrategyInstanceConfig] = []
+    if strategies_dir.is_dir():
+        for path in sorted(strategies_dir.glob("*.yaml")):
+            try:
+                strategies.append(load_strategy_config(path))
+            except Exception as exc:  # noqa: BLE001 - malformed YAMLs are skipped
+                typer.secho(f"skipping {path.name}: {exc}", fg=typer.colors.YELLOW, err=True)
+                continue
+    written = write_dashboard(cfg, audit, strategies, out)
+    typer.secho(f"dashboard written to {written}", fg=typer.colors.GREEN)
+    typer.echo("re-run this command any time to refresh it with the latest data")
+    if open_browser:
+        import webbrowser
+
+        webbrowser.open(written.resolve().as_uri())
 
 
 @audit_app.command("events")
