@@ -31,6 +31,15 @@ a line-item build estimate update as you change the square footage and options.
 
 ## Running it
 
+**Easiest: a desktop launcher.** The `launchers/` folder has a double-clickable script for
+Windows (`Barndo Planner.bat`), macOS (`Barndo Planner.command`) and Linux
+(`barndo-planner.sh`). Copy the one for your system to your desktop and double-click it.
+The first run downloads the code into `BarndoPlanner` in your home folder, installs the
+dependencies and opens the app in your browser. After that it starts in a few seconds.
+See [launchers/README.md](launchers/README.md) for details.
+
+**From a checkout:**
+
 ```bash
 npm install
 npm run dev        # http://localhost:5173
