@@ -30,7 +30,24 @@ function showToast(msg: string): void {
 const viewport = el('section', { class: 'viewport' });
 const glHost = el('div', { class: 'gl-host' });
 viewport.append(glHost);
-const viewer = new Viewer(glHost);
+
+function createViewer(): Viewer {
+  try {
+    const probe = document.createElement('canvas');
+    if (!probe.getContext('webgl2') && !probe.getContext('webgl')) throw new Error('WebGL is not available');
+    return new Viewer(glHost);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    glHost.replaceChildren(
+      el('div', { class: 'gl-fallback' }, [
+        el('strong', { text: '3D view unavailable' }),
+        el('span', { text: `Your browser could not start WebGL (${msg}). The floor plan editor and cost estimate still work. Try Chrome, Edge or Firefox with hardware acceleration enabled.` }),
+      ]),
+    );
+    throw err;
+  }
+}
+const viewer = createViewer();
 
 const hudRoom = el('div', { class: 'hud-room', text: '' });
 const hudHint = el('div', { class: 'hud-hint', text: 'Drag to orbit · scroll to zoom · right-drag to pan' });
@@ -86,25 +103,30 @@ viewport.append(viewControls, hud, lockOverlay, touchPad, toast);
 
 const hasPointerLock = 'requestPointerLock' in HTMLElement.prototype;
 const isTouch = matchMedia('(pointer: coarse)').matches;
+const canLock = (): boolean => hasPointerLock && viewer.walk.lockSupported && !isTouch;
+const DRAG_HINT = 'Drag to look around · W A S D / arrows to move · Shift to run';
 
 function setViewMode(mode: 'orbit' | 'walk'): void {
   viewer.setMode(mode);
   modeOrbit.classList.toggle('active', mode === 'orbit');
   modeWalk.classList.toggle('active', mode === 'walk');
   const walking = mode === 'walk';
-  lockOverlay.hidden = !walking || !hasPointerLock || isTouch || viewer.walk.locked;
+  lockOverlay.hidden = !walking || !canLock() || viewer.walk.locked;
   touchPad.hidden = !walking || !isTouch;
   hudHint.textContent = walking
     ? isTouch
       ? 'Drag to look around · use the arrows to move'
-      : 'W A S D to move · mouse to look · Shift to run · Esc to release the mouse'
+      : canLock()
+        ? 'W A S D to move · mouse to look · Shift to run · Esc to release the mouse'
+        : DRAG_HINT
     : 'Drag to orbit · scroll to zoom · right-drag to pan · uncheck Roof to look inside';
   if (!walking) hudRoom.textContent = '';
-  if (walking && !hasPointerLock && !isTouch) hudHint.textContent = 'Drag to look around · W A S D to move';
 }
 
 viewer.walk.onLockChange = (locked) => {
-  if (viewer.mode === 'walk') lockOverlay.hidden = locked || !hasPointerLock || isTouch;
+  if (viewer.mode !== 'walk') return;
+  lockOverlay.hidden = locked || !canLock();
+  if (!canLock() && !isTouch) hudHint.textContent = DRAG_HINT;
 };
 viewer.onRoomChange = ({ room, where }) => {
   hudRoom.textContent = where === 'room' && room ? `${room.name} · ${room.w}' × ${room.d}' · ${room.w * room.d} sf` : where === 'open' ? 'Open living area' : 'Outside';
@@ -113,7 +135,7 @@ viewer.onRoomChange = ({ room, where }) => {
 function walkTo(room: Room): void {
   viewer.teleportToRoom(room);
   setViewMode('walk');
-  if (hasPointerLock && !isTouch) viewer.walk.lock();
+  if (canLock()) viewer.walk.lock();
 }
 
 // ------------------------------------------------------------------ left column: plan editor

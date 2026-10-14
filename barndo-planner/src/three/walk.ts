@@ -28,6 +28,8 @@ export class WalkControls {
   pitch = 0;
   enabled = false;
   locked = false;
+  /** False once the browser refused pointer lock (sandboxed frames, some app views); drag-look is used instead. */
+  lockSupported = true;
   /** Set by on-screen controls: forward/right in -1..1. */
   touchMove = { forward: 0, right: 0 };
   onLockChange?: (locked: boolean) => void;
@@ -48,6 +50,11 @@ export class WalkControls {
       this.locked = document.pointerLockElement === this.dom;
       if (!this.locked) this.keys.clear();
       this.onLockChange?.(this.locked);
+    });
+    document.addEventListener('pointerlockerror', () => {
+      this.lockSupported = false;
+      this.locked = false;
+      this.onLockChange?.(false);
     });
     document.addEventListener('mousemove', (e) => {
       if (!this.enabled || !this.locked) return;
@@ -93,13 +100,17 @@ export class WalkControls {
   }
 
   lock(): void {
-    if (typeof this.dom.requestPointerLock === 'function') {
-      try {
-        const result: unknown = this.dom.requestPointerLock();
-        if (result instanceof Promise) result.catch(() => undefined);
-      } catch {
-        /* pointer lock unsupported */
-      }
+    if (!this.lockSupported || typeof this.dom.requestPointerLock !== 'function') return;
+    const refused = (): void => {
+      this.lockSupported = false;
+      this.locked = false;
+      this.onLockChange?.(false);
+    };
+    try {
+      const result: unknown = this.dom.requestPointerLock();
+      if (result instanceof Promise) result.catch(refused);
+    } catch {
+      refused();
     }
   }
 

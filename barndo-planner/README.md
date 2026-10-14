@@ -38,6 +38,10 @@ The first run downloads the code into `BarndoPlanner` in your home folder, insta
 dependencies and opens the app in your browser. After that it starts in a few seconds.
 See [launchers/README.md](launchers/README.md) for details.
 
+**No install at all:** `npm run build:single` writes `dist-single/barndo-planner.html`, one
+self-contained file that opens by double-click in any modern browser, no server needed. Share
+that file with anyone who should try the planner.
+
 **From a checkout:**
 
 ```bash
