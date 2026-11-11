@@ -74,4 +74,7 @@ export const SETTINGS: Settings = {
   closingPct: { low: 2, mid: 3, high: 5 },
   builderRiskPct: { low: 1, mid: 1.5, high: 4 },
   networkDrops: 8,
+  finish: 'mid',
+  extras: { stormShelter: true, woodStove: true, generatorHookup: true, network: true },
+  overheadElectric: false,
 };

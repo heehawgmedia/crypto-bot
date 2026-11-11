@@ -290,4 +290,69 @@ const longPorch: OptionPlan = {
   ],
 };
 
-export const OPTIONS: OptionPlan[] = [pastureRanch, splitWing, storyAndHalf, longPorch];
+/**
+ * E. 26 x 36, one level, three bedrooms and two baths. Drawn to a $250,000 all-in ceiling:
+ * the smallest split-bedroom layout that still has a walk-in pantry, a laundry room and a vaulted great room.
+ */
+const starterFarmhouse: OptionPlan = {
+  id: 'e',
+  name: 'Starter Farmhouse',
+  tagline: 'Three bedrooms and two baths on one level, cut to fit a $250,000 all-in ceiling.',
+  concept:
+    'The split-wing layout at its smallest. Two bedrooms and the hall bath sit on the west side with one 18 sq ft vestibule and no hallway. The primary suite, pantry and laundry sit on the east side. The vaulted great room runs front to back between them. Bedroom 3 has a door and a closet, so it serves as the office.',
+  plan: {
+    name: 'E. Starter Farmhouse 26 x 36',
+    width: 36,
+    depth: 26,
+    wallHeight: 10,
+    roofPitch: 4,
+    ridgeAxis: 'x',
+    rooms: [
+      room('e-bed2', 'Bedroom 2', 'bedroom', 0, 0, 10, 10, [['S', 7]]),
+      room('e-bath2', 'Hall bath', 'bathroom', 0, 10, 7, 6, [['E', 1.5]]),
+      room('e-vest', 'Hall', 'hallway', 7, 10, 3, 6, [['E', 1, 4]]),
+      room('e-bed3', 'Bedroom 3 or office', 'bedroom', 0, 16, 10, 10, [['N', 7]]),
+      room('e-pantry', 'Pantry', 'pantry', 25, 0, 5, 8, [['W', 5]]),
+      room('e-pbath', 'Primary bath', 'bathroom', 30, 0, 6, 8, [['S', 1.5]]),
+      room('e-laundry', 'Laundry', 'laundry', 25, 8, 5, 6, [['W', 1.5]]),
+      room('e-wic', 'Walk-in closet', 'closet', 30, 8, 6, 6, [['S', 1.5]]),
+      room('e-primary', 'Primary bedroom', 'bedroom', 25, 14, 11, 12, [['W', 2]]),
+      zone('e-kitchen', 'Kitchen', 'kitchen', 10, 0, 15, 9),
+      zone('e-dining', 'Dining', 'dining', 10, 9, 15, 6),
+      zone('e-living', 'Living', 'living', 10, 15, 15, 11),
+    ],
+    exteriorDoors: doors('e', [
+      ['S', 11, 'entry'],
+      ['N', 10.5, 'entry'],
+    ]),
+    windows: windows('e', [
+      ['N', 2, 'double'],
+      ['N', 16.5, 'double'],
+      ['N', 31.5, 'single'],
+      ['W', 3.5, 'single'],
+      ['W', 19.5, 'single'],
+      ['S', 2, 'double'],
+      ['S', 15.5, 'picture'],
+      ['S', 27.5, 'double'],
+      ['E', 18.5, 'single'],
+    ]),
+    porches: { N: 0, S: 6, E: 0, W: 0 },
+  },
+  beds: { main: 3, upper: 0 },
+  baths: { full: 2, half: 0 },
+  notes: [
+    'Three 12 ft bays on a 26 ft truss span.',
+    'Only 18 sq ft of hallway.',
+    'Bedrooms 2 and 3 are 10 x 10 ft with the closet inside that, so about 10 x 8 ft of clear floor.',
+    'The east gable end is left clear so the porch can wrap around it later.',
+  ],
+  spec: {
+    finish: 'budget',
+    extras: { stormShelter: false, woodStove: false },
+    overheadElectric: true,
+    networkDrops: 4,
+    kitchen: { runFt: 16, islandFt: 6 },
+  },
+};
+
+export const OPTIONS: OptionPlan[] = [pastureRanch, splitWing, storyAndHalf, longPorch, starterFarmhouse];

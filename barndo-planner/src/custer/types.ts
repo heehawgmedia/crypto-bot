@@ -1,5 +1,26 @@
 import type { Plan, Room } from '../model/types';
 
+export type FinishLevel = 'budget' | 'mid' | 'high';
+
+/** Priced extras that can be built now or left for later. */
+export interface Extras {
+  stormShelter: boolean;
+  woodStove: boolean;
+  generatorHookup: boolean;
+  network: boolean;
+}
+
+/** Choices that belong to one option and override the shared cost settings. */
+export interface OptionSpec {
+  finish?: FinishLevel;
+  extras?: Partial<Extras>;
+  /** Overhead electric service from the road instead of underground. */
+  overheadElectric?: boolean;
+  networkDrops?: number;
+  /** Feet of kitchen cabinet run along the walls, and feet of island. */
+  kitchen?: { runFt: number; islandFt: number };
+}
+
 /** One of the original floor plan options for the Custer, Kentucky site. */
 export interface OptionPlan {
   id: string;
@@ -21,4 +42,5 @@ export interface OptionPlan {
   baths: { full: number; half: number };
   /** Design notes worth showing next to the plan. */
   notes: string[];
+  spec?: OptionSpec;
 }

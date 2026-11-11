@@ -4,7 +4,7 @@
  * and floor plan data the app uses.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { estimate, GROUP_ORDER, type Confidence, type Estimate, type Range } from '../src/custer/costModel';
+import { estimate, FINISH_LABEL, GROUP_ORDER, type Confidence, type Estimate, type Range } from '../src/custer/costModel';
 import { COST_ANCHORS, KENTUCKY_FACTS } from '../src/custer/kentucky';
 import { OPTIONS } from '../src/custer/options';
 import { PLAN_SVG_CSS, planSvg } from '../src/custer/planSvg';
@@ -12,7 +12,7 @@ import { KIT_OFFERS, RESEARCH_DATE, STOCK_PLANS, UNREACHABLE } from '../src/cust
 import { SOURCES } from '../src/custer/sources';
 import type { OptionPlan } from '../src/custer/types';
 import { RATES, SETTINGS } from '../src/custer/unitCosts';
-import { scoreWants, WANTS, type Met, type OptionId } from '../src/custer/wants';
+import { OPTION_INDEX, scoreWants, WANTS, type Met, type OptionId } from '../src/custer/wants';
 
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const int = (n: number): string => Math.round(n).toLocaleString('en-US');
@@ -44,6 +44,7 @@ const estimates = OPTIONS.map((o) => estimate(o, RATES, SETTINGS));
 const byId = (id: string): Estimate => estimates.find((e) => e.option.id === id) as Estimate;
 const letter = (o: OptionPlan): string => o.id.toUpperCase();
 const footprint = (o: OptionPlan): string => `${o.plan.depth} x ${o.plan.width} ft`;
+const bedBath = (o: OptionPlan): string => `${o.beds.main + o.beds.upper} bed / ${o.baths.full + o.baths.half * 0.5} bath`;
 
 // ---------------------------------------------------------------- variations used for "what moves the total"
 function frontPorchOnly(o: OptionPlan): OptionPlan {
@@ -62,12 +63,12 @@ function summaryTable(): string {
       const w = scoreWants(o.id as OptionId);
       const levels = o.upper ? `${int(e.quantities.mainSf)} main + ${int(e.quantities.upperSf)} up` : 'one level';
       return `<tr>
-        <th scope="row"><a href="#option-${o.id}">${letter(o)}. ${esc(o.name)}</a><span class="sub">${footprint(o)}, ${levels}</span></th>
+        <th scope="row"><a href="#option-${o.id}">${letter(o)}. ${esc(o.name)}</a><span class="sub">${bedBath(o)}, ${footprint(o)}, ${levels}</span></th>
         <td class="num">${int(e.quantities.heatedSf)}</td>
         <td class="num strong">${usdK(e.total.mid)}</td>
         <td class="num">${usdK(e.total.low)} to ${usdK(e.total.high)}</td>
         <td class="num strong">$${e.perHeatedSf.mid}</td>
-        <td class="num">${w.mustMet} of ${w.mustTotal}</td>
+        <td class="num">${w.mustMet} of ${w.mustTotal}${w.mustLater ? `<span class="sub">${w.mustLater} more left for later</span>` : ''}</td>
         <td class="num">${w.niceMet} of ${w.niceTotal}</td>
       </tr>`;
     })
@@ -86,8 +87,10 @@ function takeaways(): string {
   const highHouse = Math.max(...estimates.map((e) => e.houseOnly.perSf));
   const extra = c.total.mid - a.total.mid;
   const extraSf = c.quantities.heatedSf - a.quantities.heatedSf;
+  const e5 = byId('e');
   return `<ul class="points">
-    <li><b>Lowest total:</b> option A at about ${usdK(a.total.mid)}. It is the smallest slab that holds your four bedrooms, office and 2.5 baths.</li>
+    <li><b>Under $250,000:</b> <a href="#option-e">option E</a> at about ${usdK(e5.total.mid)}. It is ${int(e5.quantities.heatedSf)} sq ft with three bedrooms and two baths. The storm shelter, the wood stove and the end of the porch are left for later.</li>
+    <li><b>Lowest total with four bedrooms:</b> option A at about ${usdK(a.total.mid)}. It is the smallest slab that holds your four bedrooms, office and 2.5 baths.</li>
     <li><b>Lowest cost per square foot:</b> option B at about $${b.perHeatedSf.mid}. Its bonus loft adds ${int(b.quantities.upperSf)} sq ft under a roof you are already paying for.</li>
     <li><b>Most space for the least added money:</b> option C gives ${int(extraSf)} more sq ft than A for about ${usdK(extra)} more, because three bedrooms sit above the main level. That is the trade against your one-level must-have.</li>
     <li><b>Most of your nice-to-haves:</b> option D, all on one level, at about ${usdK(d.total.mid)}.</li>
@@ -96,7 +99,7 @@ function takeaways(): string {
 }
 
 function tiers(): string {
-  const ceilings = [450000, 500000, 550000, 600000, 650000, 700000];
+  const ceilings = [250000, 300000, 400000, 450000, 500000, 550000, 600000, 650000];
   const rows = ceilings
     .map((cap) => {
       const fits = estimates.filter((e) => e.total.mid <= cap).map((e) => letter(e.option));
@@ -139,9 +142,9 @@ function optionSection(e: Estimate): string {
   const o = e.option;
   const q = e.quantities;
   const w = scoreWants(o.id as OptionId);
-  const idx = ['a', 'b', 'c', 'd'].indexOf(o.id);
+  const idx = OPTION_INDEX[o.id as OptionId];
   const missed = WANTS.filter((x) => x.rank === 'nice' && x.met && (x.met[idx] === 'no' || x.met[idx] === 'part'));
-  const partMust = WANTS.filter((x) => x.rank === 'must' && x.met && x.met[idx] !== 'yes');
+  const partMust = WANTS.filter((x) => x.rank === 'must' && x.met && x.met[idx] === 'part');
   const like = (SIZED_LIKE[o.id] ?? [])
     .map((num) => STOCK_PLANS.find((p) => p.number === num))
     .filter((p): p is (typeof STOCK_PLANS)[number] => Boolean(p))
@@ -157,7 +160,8 @@ function optionSection(e: Estimate): string {
     ['Wet zones', String(q.wetZones)],
     ['Expected total', `${usdK(e.total.mid)} (${usdK(e.total.low)} to ${usdK(e.total.high)})`],
     ['Per heated sq ft', `$${e.perHeatedSf.mid}`],
-    ['Checklist', `${w.mustMet} of ${w.mustTotal} must-haves, ${w.niceMet} of ${w.niceTotal} nice-to-haves`],
+    ['Finish level', FINISH_LABEL[e.settings.finish].split(':')[0]],
+    ['Checklist', `${w.mustMet} of ${w.mustTotal} must-haves${w.mustLater ? ` with ${w.mustLater} more left for later` : ''}, ${w.niceMet} of ${w.niceTotal} nice-to-haves`],
   ];
   const upper = o.upper
     ? `<figure class="plan-fig"><figcaption>Upper level${o.upper.kind === 'bonus' ? ': enclosed bonus room' : ''}</figcaption><div class="plan-scroll">${planSvg(o.plan, o.upper.rooms, { exterior: false, upperLevel: true, title: `${o.plan.name} upper level` })}</div></figure>`
@@ -175,13 +179,85 @@ function optionSection(e: Estimate): string {
         <dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>
         <ul class="points small">${o.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
         ${like ? `<p class="small">Sized like ${like}. The layout is my own and copies neither.</p>` : ''}
-        ${partMust.length ? `<p class="small"><b>Must-have only partly met:</b> ${partMust.map((x) => `${esc(x.label)}. ${esc(x.note ?? '')}`).join(' ')}</p>` : ''}
+        ${o.id !== 'e' && partMust.length ? `<p class="small"><b>Must-have only partly met:</b> ${partMust.map((x) => `${esc(x.label)}. ${esc(x.note ?? '')}`).join(' ')}</p>` : ''}
         <details><summary>Nice-to-haves this option leaves out (${missed.length})</summary>
           <ul class="points small">${missed.map((x) => `<li>${esc(x.label)} <span class="muted">(${mark((x.met as Met[])[idx])})</span></li>`).join('')}</ul>
         </details>
       </div>
     </div>
+    ${o.id === 'e' ? budgetBlock(e) : ''}
   </section>`;
+}
+
+/** Option E only: how it fits the $250,000 ceiling, what waits for later, and how tight the margin is. */
+function budgetBlock(e: Estimate): string {
+  const CEILING = 250000;
+  const q = e.quantities;
+  const hundreds = (n: number): string => usd(Math.round(n / 100) * 100);
+  const range = (r: Range, qty = 1): string => `${hundreds(r.low * qty)} to ${hundreds(r.high * qty)}`;
+  const endPorchSf = e.option.plan.depth * e.option.plan.porches.S;
+  const item = (id: string): number => e.items.find((i) => i.id === id)?.total.mid ?? 0;
+  const group = (g: string): number => e.items.filter((i) => i.group === g).reduce((sum, i) => sum + i.total.mid, 0);
+  const money: [string, number][] = [
+    ['House shell, slab and porch', group('Structure')],
+    ['Insulation, windows, doors, gutters', group('Envelope')],
+    ['Electrical, plumbing, HVAC', group('Systems')],
+    ['Interior finishes, cabinets, appliances', group('Interior')],
+    ['Well, septic, driveway, power, site work', group('Site and utilities')],
+    ['Generator hookup and wired internet', group('Must-have extras')],
+    ['Plans, permits, survey', group('Before you build')],
+    ["Builder's overhead and profit", item('gc')],
+    ['Contingency', item('contingency')],
+    ["Loan costs and builder's risk insurance", item('loan') + item('builders-risk')],
+  ];
+  const musts = WANTS.filter((x) => x.rank === 'must' && x.met);
+  const kept = musts.filter((x) => (x.met as Met[])[4] === 'yes').map((x) => x.label);
+  return `<div class="budget">
+    <div class="budget-col">
+      <h4>How it gets under $250,000</h4>
+      <ul class="points small">
+        <li><b>Size.</b> ${int(q.heatedSf)} sq ft on one level, with three bedrooms and two baths. The fourth bedroom and the half bath are gone, as you allowed.</li>
+        <li><b>Finishes.</b> Stock cabinets, laminate counters, basic fixtures and appliances, batt and blown insulation.</li>
+        <li><b>Porch.</b> A ${e.option.plan.porches.S} ft covered porch across the front. The end section that makes it a wraparound waits for later.</li>
+        <li><b>Office.</b> Bedroom 3 has a door and a closet and serves as the office. There is no separate office room.</li>
+        <li><b>Power.</b> Overhead service from the road, which the co-op extends at no charge, instead of underground.</li>
+        <li><b>Kitchen.</b> An L-shaped kitchen with a 16 ft cabinet run, a 6 ft island with seating, a window over the sink and a walk-in pantry.</li>
+      </ul>
+      <h4>Must-haves it keeps in full (${kept.length} of ${musts.length})</h4>
+      <p class="small">${kept.map(esc).join('. ')}.</p>
+      <p class="small"><b>Partly met (2):</b> the wraparound porch, as a front porch for now, and the office, as Bedroom 3. <b>Left for later (2):</b> the storm shelter and the wood stove.</p>
+    </div>
+    <div class="budget-col">
+      <h4>Left for later, and what each costs to add</h4>
+      <div class="scroll"><table class="data">
+        <tbody>
+          <tr><th scope="row">Below-ground storm shelter</th><td class="num">${range(RATES.stormShelter.range)}</td></tr>
+          <tr><th scope="row">Wood stove with chimney</th><td class="num">${range(RATES.woodStove.range)}</td></tr>
+          <tr><th scope="row">End porch to complete the wraparound<span class="sub">${e.option.plan.depth} ft long, ${e.option.plan.porches.S} ft deep</span></th><td class="num">${range(RATES.porchPerSf.range, endPorchSf)}</td></tr>
+        </tbody>
+      </table></div>
+      <p class="small">All three can be planned for now at almost no cost: a framed path for the chimney and a hearth spot in the living room, a shelter site by the back door, and a ledger line on the east wall for the porch roof.</p>
+      <h4>Where the ${usdK(e.total.mid)} goes</h4>
+      <div class="scroll"><table class="data">
+        <tbody>${money.map(([label, v]) => `<tr><th scope="row" class="item">${esc(label)}</th><td class="num">${usd(v)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr class="total"><th scope="row">Expected total</th><td class="num">${usd(e.total.mid)}</td></tr></tfoot>
+      </table></div>
+    </div>
+    <div class="budget-wide">
+      <h4>How tight it is</h4>
+      <ul class="points small">
+        <li>The expected total leaves about ${usdK(CEILING - e.total.mid)} under the ceiling. The 12 percent contingency of ${usdK(item('contingency'))} is already inside the total.</li>
+        <li>The likely range is ${usdK(e.total.low)} to ${usdK(e.total.high)}, so a real bid can land above $250,000. No builder has priced this.</li>
+        <li>About ${usdK(group('Site and utilities') + group('Before you build'))} goes to the well, septic, driveway, power and paperwork before any house is built, and the builder's fee, contingency and loan add about ${usdK(item('gc') + item('contingency') + item('loan') + item('builders-risk'))} more. That is why $250,000 buys ${int(q.heatedSf)} sq ft here and not 1,500.</li>
+      </ul>
+      <h4>What would buy more house under the same ceiling</h4>
+      <ul class="points small">
+        <li><b>Paying cash.</b> Loan interest and closing costs are about ${usdK(item('loan'))} of this total.</li>
+        <li><b>County water.</b> The well is ${usdK(item('well'))} of this total and may fail. A tap, if a line reaches your road, could cost less.</li>
+        <li><b>Running the job yourself.</b> The builder's fee is about ${usdK(item('gc'))}. You chose to have a builder do everything, so it stays in.</li>
+      </ul>
+    </div>
+  </div>`;
 }
 
 function costMatrix(): string {
@@ -198,7 +274,8 @@ function costMatrix(): string {
       body += `<tr><th scope="row" class="item">${esc(sample.label)}</th>${estimates
         .map((e) => {
           const it = e.items.find((i) => i.id === id);
-          return `<td class="num">${it ? usd(it.total.mid) : '<span class="muted">none</span>'}</td>`;
+          const missing = id === 'storm-shelter' || id === 'wood-stove' ? 'later' : 'none';
+          return `<td class="num">${it ? usd(it.total.mid) : `<span class="muted">${missing}</span>`}</td>`;
         })
         .join('')}<td>${flag(sample.confidence)}</td></tr>`;
     }
@@ -299,12 +376,14 @@ const ASSUMPTIONS: string[] = [
   'HomeGuide, Angi and HomeAdvisor refused automated visits. A few figures from them came from search extracts only and are marked "Not opened" in the source list. The search allowance also ran out before some Kentucky builders could be found.',
   'Bedrooms are drawn with their closets inside the room rectangle, so a 10 x 14 ft bedroom has about 10 x 12 ft of clear floor.',
   'The view direction is unknown. Every plan can be mirrored or turned on the site so the great room glass faces it.',
+  'Option E is priced differently from A to D: budget finishes, overhead electric service, a septic system sized for three bedrooms, a smaller kitchen and four network drops. Options A to D are unchanged.',
+  'In option E the storm shelter, the wood stove and the end section of the wraparound porch are left for later so the total stays under $250,000. They are not in its total. I kept the front porch and the second bath ahead of them.',
 ];
 
 const QUESTIONS: string[] = [
+  'Option E leaves the storm shelter, wood stove and end porch for later. If one of those matters more than the front porch or the second bath, tell me and I will trade them.',
   'Which direction is your best view, and which side faces the road? I will turn the 3D models to match.',
-  'Is option C still in the running with three bedrooms upstairs, or should I replace it with another one-level layout?',
-  'Do you want all four options modeled in 3D, or only the ones you would actually build?',
+  'Which options do you want modeled in 3D: option E alone, or others beside it for comparison?',
   'Is there a county water line at your road? If so I will add a water tap as an alternative to the well.',
 ];
 
@@ -387,7 +466,7 @@ table.data tr.muted-row th, table.data tr.muted-row td { color: var(--muted); fo
 table.data.narrow { max-width: 640px; }
 table.data.wide { min-width: 1180px; }
 table.data.wide td, table.data.wide th { font-size: 0.86rem; }
-table.data.matrix { min-width: 820px; }
+table.data.matrix { min-width: 1000px; }
 table.data.detail-table { min-width: 860px; }
 .sub { display: block; font-weight: 400; font-size: 0.82rem; color: var(--muted); white-space: normal; }
 .sub.warn { color: var(--rough); }
@@ -418,6 +497,12 @@ details > ul { padding: 4px 14px 12px 2.2em; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .fact-group { display: flex; flex-direction: column; gap: 8px; }
+.banner { background: var(--surface); border: 2px solid var(--accent); padding: 12px 16px; max-width: none; }
+.budget { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px 24px; background: var(--surface); border: 2px solid var(--ink); padding: 16px 18px; min-width: 0; }
+.budget-col, .budget-wide { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.budget-wide { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 14px; }
+.budget h4 { font-family: var(--display); font-size: 1.1rem; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; margin: 0; }
+.budget .scroll { border: 1px solid var(--line); }
 .sources { margin: 0; padding-left: 2.2em; font-size: 0.88rem; display: flex; flex-direction: column; gap: 5px; }
 .sources li { overflow-wrap: anywhere; }
 .src-pub { font-weight: 600; }
@@ -425,6 +510,7 @@ details > ul { padding: 4px 14px 12px 2.2em; }
   .titleblock { grid-template-columns: minmax(0, 1fr); }
   .tb-cells { border-left: 0; border-top: 2px solid var(--ink); }
   .option-grid { grid-template-columns: minmax(0, 1fr); }
+  .budget { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 ${PLAN_SVG_CSS}`;
@@ -437,7 +523,7 @@ const html = `<title>Custer Barndo Cost Report</title>
     <div class="tb-main">
       <p class="eyebrow">Steps 2 to 4 of 6 &middot; research, cost model, floor plans</p>
       <h1>Research and cost report</h1>
-      <p class="prose">${STOCK_PLANS.length} published plans, ${KIT_OFFERS.length} kit and shell providers, Kentucky rules and fees, a line-by-line cost model and four original floor plans. Nothing here is a quote. Every number names its source and how far to trust it.</p>
+      <p class="prose">${STOCK_PLANS.length} published plans, ${KIT_OFFERS.length} kit and shell providers, Kentucky rules and fees, a line-by-line cost model and five original floor plans, one of them cut to a $250,000 ceiling. Nothing here is a quote. Every number names its source and how far to trust it.</p>
     </div>
     <dl class="tb-cells">
       <div><dt>Project</dt><dd>4 bed / 2.5 bath barndominium, no attached shop</dd></div>
@@ -445,6 +531,8 @@ const html = `<title>Custer Barndo Cost Report</title>
       <div><dt>Researched</dt><dd>${RESEARCH_DATE}</dd></div>
     </dl>
   </header>
+
+  <p class="banner"><b>New: a plan under $250,000.</b> <a href="#option-e">Option E</a> comes to about ${usdK(byId('e').total.mid)} all-in. It gets there by shrinking to ${int(byId('e').quantities.heatedSf)} sq ft, using budget finishes and leaving the storm shelter, wood stove and end porch for later.</p>
 
   <nav class="toc" aria-label="Sections">
     <a href="#answer">Short answer</a><a href="#tiers">Budget tiers</a><a href="#plans">Floor plans</a><a href="#costs">Cost table</a><a href="#published">Published plans</a><a href="#kits">Kits and shells</a><a href="#kentucky">Kentucky facts</a><a href="#assumptions">Assumptions</a><a href="#questions">Questions for you</a><a href="#sources">Sources</a>
@@ -458,15 +546,15 @@ const html = `<title>Custer Barndo Cost Report</title>
 
   <section class="block" id="tiers">
     <h2>Budget tiers</h2>
-    <p class="prose">You said your budget is not set, so here is what each ceiling buys. Totals are all-in: house, porch, site work, well, septic, builder's fee, contingency and loan costs.</p>
+    <p class="prose">Here is what each ceiling buys, starting from the $250,000 you named. Totals are all-in: house, porch, site work, well, septic, builder's fee, contingency and loan costs.</p>
     ${tiers()}
     <h3>What moves the total most</h3>
     ${levers()}
   </section>
 
   <section class="block" id="plans">
-    <h2>Four original floor plans</h2>
-    <p class="prose">Each is a plain rectangle on a standard 36 or 40 ft truss span, sized like the published plans that came closest to your checklist. No published plan combined four bedrooms, an office with a door, a wraparound porch and no garage, so these fill that gap. Blue marks are windows and glass doors. Every plan can be mirrored or turned to face your view.</p>
+    <h2>Five original floor plans</h2>
+    <p class="prose">Each is a plain rectangle on a standard truss span. Options A to D are sized like the published plans that came closest to your checklist. No published plan combined four bedrooms, an office with a door, a wraparound porch and no garage, so they fill that gap. Option E is smaller than any plan I found, because it is cut to a $250,000 all-in ceiling. Blue marks are windows and glass doors. Every plan can be mirrored or turned to face your view.</p>
     ${estimates.map(optionSection).join('')}
   </section>
 

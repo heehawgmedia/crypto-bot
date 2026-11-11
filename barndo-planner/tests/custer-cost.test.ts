@@ -71,7 +71,8 @@ test('totals add up and the likely range sits inside the all-low and all-high to
 });
 
 test('the house-only figure agrees with the two regional anchors', () => {
-  for (const e of estimates) {
+  // The anchors describe full-size homes at ordinary finishes, so the small budget option is checked separately.
+  for (const e of estimates.filter((x) => x.option.id !== 'e')) {
     // BuildMax: Kentucky turnkey $125 to $150 per sq ft by local contractors.
     assert.ok(e.houseOnly.perSf >= 120 && e.houseOnly.perSf <= 155, `${e.option.id} house-only $${e.houseOnly.perSf}/sf`);
     // Summertown Metals published turnkey: $102 to $123 per sq ft under roof.
@@ -90,7 +91,27 @@ test('contingency stays within the 10 to 15 percent the owner asked for', () => 
 
 test('the smallest footprint has the lowest total', () => {
   const byTotal = [...estimates].sort((a, b) => a.total.mid - b.total.mid);
-  assert.equal(byTotal[0].option.id, 'a');
+  assert.equal(byTotal[0].option.id, 'e');
+  assert.equal(byTotal[1].option.id, 'a');
+});
+
+test('the budget option stays under its 250,000 dollar ceiling with contingency and loan costs inside', () => {
+  const e = estimates.find((x) => x.option.id === 'e');
+  assert.ok(e);
+  assert.ok(e.total.mid < 250000, `expected total is ${e.total.mid}`);
+  assert.equal(e.settings.finish, 'budget');
+  assert.ok(e.items.some((i) => i.id === 'contingency') && e.items.some((i) => i.id === 'loan') && e.items.some((i) => i.id === 'gc'));
+  // Left for later, so not priced in this build.
+  assert.ok(!e.items.some((i) => i.id === 'storm-shelter' || i.id === 'wood-stove'));
+  // A small house costs more per square foot than the anchors, but not wildly more.
+  assert.ok(e.houseOnly.perSf > 130 && e.houseOnly.perSf < 180, `house-only ${e.houseOnly.perSf} per sq ft`);
+});
+
+test('default settings leave the four full options priced with every extra', () => {
+  for (const e of estimates.filter((x) => x.option.id !== 'e')) {
+    assert.equal(e.settings.finish, 'mid');
+    for (const id of ['storm-shelter', 'wood-stove', 'generator', 'network']) assert.ok(e.items.some((i) => i.id === id), `${e.option.id} ${id}`);
+  }
 });
 
 test('every cited source exists, and research entries are complete', () => {

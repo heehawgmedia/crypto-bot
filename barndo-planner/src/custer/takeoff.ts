@@ -35,6 +35,9 @@ export interface Takeoff {
   stairs: number;
   eaveHeight: number;
   roofPitch: number;
+  /** Feet of kitchen wall cabinets and of island. */
+  kitchenRunFt: number;
+  kitchenIslandFt: number;
 }
 
 const WET = new Set(['bathroom', 'half-bath', 'kitchen', 'laundry']);
@@ -122,5 +125,7 @@ export function takeoff(option: OptionPlan): Takeoff {
     stairs: option.upper ? 1 : 0,
     eaveHeight: plan.wallHeight,
     roofPitch: plan.roofPitch,
+    kitchenRunFt: option.spec?.kitchen?.runFt ?? 24,
+    kitchenIslandFt: option.spec?.kitchen?.islandFt ?? 7,
   };
 }

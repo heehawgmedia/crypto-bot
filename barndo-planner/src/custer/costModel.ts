@@ -2,7 +2,7 @@
  * Full build-cost model: every line item the owner asked for, each with a low / expected / high
  * figure, the quantity it was multiplied by, where the unit price came from and how solid it is.
  */
-import type { OptionPlan } from './types';
+import type { Extras, FinishLevel, OptionPlan } from './types';
 import { takeoff, type Takeoff } from './takeoff';
 
 export interface Range {
@@ -60,11 +60,31 @@ export interface Settings {
   builderRiskPct: Range;
   /** Number of wired network drops. */
   networkDrops: number;
+  finish: FinishLevel;
+  extras: Extras;
+  /** Overhead electric service: free under the co-op's 1,000 ft allowance. */
+  overheadElectric: boolean;
 }
+
+/** How each finish level scales the finish-driven lines, relative to the middle level. */
+export const FINISH_FACTORS: Record<FinishLevel, Record<FinishKey, number>> = {
+  budget: { windows: 0.85, doors: 0.85, flooring: 0.85, cabinets: 0.65, counters: 0.6, appliances: 0.65, fixtures: 0.75, lighting: 0.7, paint: 0.85, interiorDoor: 0.85, trim: 0.75, insulation: 0.8, landscaping: 0.5 },
+  mid: { windows: 1, doors: 1, flooring: 1, cabinets: 1, counters: 1, appliances: 1, fixtures: 1, lighting: 1, paint: 1, interiorDoor: 1, trim: 1, insulation: 1, landscaping: 1 },
+  high: { windows: 1.35, doors: 1.3, flooring: 1.4, cabinets: 1.6, counters: 1.5, appliances: 1.6, fixtures: 1.6, lighting: 1.6, paint: 1.2, interiorDoor: 1.3, trim: 1.5, insulation: 1.5, landscaping: 1.5 },
+};
+export type FinishKey = 'windows' | 'doors' | 'flooring' | 'cabinets' | 'counters' | 'appliances' | 'fixtures' | 'lighting' | 'paint' | 'interiorDoor' | 'trim' | 'insulation' | 'landscaping';
+
+export const FINISH_LABEL: Record<FinishLevel, string> = {
+  budget: 'Budget finishes: stock cabinets, laminate counters, basic fixtures and appliances, batt and blown insulation',
+  mid: 'Middle finishes: semi-custom cabinets, mid-priced counters, fixtures and appliances',
+  high: 'High finishes: custom cabinets, stone counters, upgraded fixtures, all spray foam',
+};
 
 export interface Estimate {
   option: OptionPlan;
   quantities: Takeoff;
+  /** The settings actually used, after the option's own choices were applied. */
+  settings: Settings;
   items: LineItem[];
   /** Labor and materials the builder manages. */
   construction: Range;
@@ -153,13 +173,27 @@ export function shellFactor(q: Takeoff): number {
 
 /** Linear feet of kitchen cabinet run plus bathroom vanities, and square feet of countertop. */
 export function cabinetry(q: Takeoff): { cabinetFt: number; counterSf: number } {
-  // L-shaped kitchen (about 24 ft of base run with uppers) plus a 7 ft island; a 5 ft double vanity,
-  // a 3 ft vanity per other full bath and a 2 ft vanity per half bath.
+  // Kitchen wall run with uppers plus the island; a 5 ft double vanity, a 3 ft vanity per other
+  // full bath and a 2 ft vanity per half bath.
   const vanityFt = 5 + Math.max(0, q.fullBaths - 1) * 3 + q.halfBaths * 2;
-  return { cabinetFt: 24 + 7 + vanityFt, counterSf: Math.round((24 * 2.1 + 7 * 3.5 + vanityFt * 1.9) / 1) };
+  return { cabinetFt: q.kitchenRunFt + q.kitchenIslandFt + vanityFt, counterSf: Math.round(q.kitchenRunFt * 2.1 + q.kitchenIslandFt * 3.5 + vanityFt * 1.9) };
 }
 
-export function estimate(option: OptionPlan, rates: Rates, s: Settings): Estimate {
+/** Shared settings with one option's own choices laid over them. */
+export function settingsFor(option: OptionPlan, base: Settings): Settings {
+  const spec = option.spec ?? {};
+  return {
+    ...base,
+    finish: spec.finish ?? base.finish,
+    extras: { ...base.extras, ...spec.extras },
+    overheadElectric: spec.overheadElectric ?? base.overheadElectric,
+    networkDrops: spec.networkDrops ?? base.networkDrops,
+  };
+}
+
+export function estimate(option: OptionPlan, rates: Rates, base: Settings): Estimate {
+  const s = settingsFor(option, base);
+  const f = FINISH_FACTORS[s.finish];
   const q = takeoff(option);
   const items: LineItem[] = [];
   const line = (id: string, group: Group, label: string, basis: string, parts: [Rate, number][], note = ''): void => {
@@ -201,12 +235,18 @@ export function estimate(option: OptionPlan, rates: Rates, s: Settings): Estimat
   line('sitework', 'Site and utilities', 'Site clearing and grading', `${fmt(padSf)} sq ft building pad on open pasture, gentle slope`, [[rates.sitePrepPerSf, padSf]]);
   line('driveway', 'Site and utilities', 'Driveway', `${fmt(s.roadDistanceFt)} ft of 12 ft wide gravel drive`, [[rates.drivewayPerFt, s.roadDistanceFt]]);
   line('well', 'Site and utilities', 'Well', 'new drilled well with casing, pump, pressure tank and line to the house', [[rates.well, 1]]);
-  line('septic', 'Site and utilities', 'Septic', `new system sized for ${q.bedrooms} bedrooms`, [[rates.septic, 1]]);
-  line('electric-run', 'Site and utilities', 'Electric service run', `${fmt(s.roadDistanceFt)} ft from the line at the road, meter base and temporary power`, [
-    [rates.electricRunPerFt, s.roadDistanceFt],
-    [rates.electricService, 1],
-  ]);
-  line('landscaping', 'Site and utilities', 'Landscaping', 'final grade, seed and straw around the house', [[rates.landscaping, 1]]);
+  // The septic rate is for four bedrooms; smaller houses need a smaller tank and field.
+  const septicFactor = q.bedrooms >= 4 ? 1 : q.bedrooms === 3 ? 0.75 : 0.7;
+  line('septic', 'Site and utilities', 'Septic', `new system sized for ${q.bedrooms} bedrooms`, [[rates.septic, septicFactor]]);
+  if (s.overheadElectric) {
+    line('electric-run', 'Site and utilities', 'Electric service run', `${fmt(s.roadDistanceFt)} ft of overhead line at no extension charge, meter base and temporary power`, [[rates.electricService, 1]]);
+  } else {
+    line('electric-run', 'Site and utilities', 'Electric service run', `${fmt(s.roadDistanceFt)} ft underground from the line at the road, meter base and temporary power`, [
+      [rates.electricRunPerFt, s.roadDistanceFt],
+      [rates.electricService, 1],
+    ]);
+  }
+  line('landscaping', 'Site and utilities', 'Landscaping', s.finish === 'budget' ? 'seed and straw only' : 'final grade, seed and straw around the house', [[rates.landscaping, f.landscaping]]);
 
   // ---- Structure
   line('slab', 'Structure', 'Foundation slab', `${fmt(q.mainSf)} sq ft monolithic slab with thickened edges`, [[rates.slabPerSf, q.mainSf]]);
@@ -227,13 +267,13 @@ export function estimate(option: OptionPlan, rates: Rates, s: Settings): Estimat
   if (q.porchSf > 0) line('porches', 'Structure', 'Porches', `${fmt(q.porchSf)} sq ft covered porch: slab, posts, lean-to roof`, [[rates.porchPerSf, q.porchSf]]);
 
   // ---- Envelope
-  line('insulation', 'Envelope', 'Insulation', `${fmt(envelopeSf)} sq ft of walls and roof`, [[rates.insulationPerSf, envelopeSf]]);
+  line('insulation', 'Envelope', 'Insulation', `${fmt(envelopeSf)} sq ft of walls and roof`, [[rates.insulationPerSf, envelopeSf * f.insulation]]);
   line('windows-doors', 'Envelope', 'Windows and doors', `${windowCount} windows, ${q.exteriorDoors} entry doors, ${q.patioDoors} patio doors`, [
-    [rates.windowSingle, q.windows.single],
-    [rates.windowDouble, q.windows.double],
-    [rates.windowPicture, q.windows.picture],
-    [rates.entryDoor, q.exteriorDoors],
-    [rates.patioDoor, q.patioDoors],
+    [rates.windowSingle, q.windows.single * f.windows],
+    [rates.windowDouble, q.windows.double * f.windows],
+    [rates.windowPicture, q.windows.picture * f.windows],
+    [rates.entryDoor, q.exteriorDoors * f.doors],
+    [rates.patioDoor, q.patioDoors * f.doors],
   ]);
   line('gutters', 'Envelope', 'Gutters', `${fmt(q.gutterFt)} ft of gutter with downspouts`, [[rates.gutterPerFt, q.gutterFt]]);
 
@@ -247,28 +287,28 @@ export function estimate(option: OptionPlan, rates: Rates, s: Settings): Estimat
     [rates.partitionPerFt, q.interiorWallFt + q.perimeterFt],
   ]);
   line('drywall', 'Interior', 'Drywall', `${fmt(drywallSf)} sq ft of wall and ceiling board`, [[rates.drywallPerSf, drywallSf]]);
-  line('flooring', 'Interior', 'Flooring', `${fmt(q.heatedSf)} sq ft`, [[rates.flooringPerSf, q.heatedSf]]);
+  line('flooring', 'Interior', 'Flooring', `${fmt(q.heatedSf)} sq ft`, [[rates.flooringPerSf, q.heatedSf * f.flooring]]);
   line('cabinets', 'Interior', 'Cabinets and counters', `${cab.cabinetFt} ft of cabinets, ${cab.counterSf} sq ft of countertop`, [
-    [rates.cabinetsPerFt, cab.cabinetFt],
-    [rates.countersPerSf, cab.counterSf],
+    [rates.cabinetsPerFt, cab.cabinetFt * f.cabinets],
+    [rates.countersPerSf, cab.counterSf * f.counters],
   ]);
-  line('appliances', 'Interior', 'Appliances', 'range, refrigerator, dishwasher, microwave, washer and dryer', [[rates.appliances, 1]]);
+  line('appliances', 'Interior', 'Appliances', 'range, refrigerator, dishwasher, microwave, washer and dryer', [[rates.appliances, f.appliances]]);
   line('fixtures', 'Interior', 'Fixtures', `plumbing fixtures for ${q.fullBaths} full and ${q.halfBaths} half baths and the kitchen, plus lighting`, [
-    [rates.plumbingFixturesPerBath, q.fullBaths + q.halfBaths * 0.5],
-    [rates.kitchenFixtures, 1],
-    [rates.lightingPerSf, q.heatedSf],
+    [rates.plumbingFixturesPerBath, (q.fullBaths + q.halfBaths * 0.5) * f.fixtures],
+    [rates.kitchenFixtures, f.fixtures],
+    [rates.lightingPerSf, q.heatedSf * f.lighting],
   ]);
-  line('paint', 'Interior', 'Paint', `${fmt(q.heatedSf)} sq ft of floor area, walls and ceilings`, [[rates.paintPerSf, q.heatedSf]]);
+  line('paint', 'Interior', 'Paint', `${fmt(q.heatedSf)} sq ft of floor area, walls and ceilings`, [[rates.paintPerSf, q.heatedSf * f.paint]]);
   line('trim', 'Interior', 'Interior doors and trim', `${q.interiorDoors} doors, ${q.casedOpenings} cased openings, baseboard and casing`, [
-    [rates.interiorDoor, q.interiorDoors + q.casedOpenings * 0.5],
-    [rates.trimPerSf, q.heatedSf],
+    [rates.interiorDoor, (q.interiorDoors + q.casedOpenings * 0.5) * f.interiorDoor],
+    [rates.trimPerSf, q.heatedSf * f.trim],
   ]);
 
   // ---- Must-have extras
-  line('storm-shelter', 'Must-have extras', 'Below-ground storm shelter', 'one outdoor in-ground shelter, installed', [[rates.stormShelter, 1]]);
-  line('wood-stove', 'Must-have extras', 'Wood stove', 'freestanding stove with chimney, installed', [[rates.woodStove, 1]]);
-  line('generator', 'Must-have extras', 'Generator hookup', 'inlet and transfer switch, generator not included', [[rates.generatorHookup, 1]]);
-  line('network', 'Must-have extras', 'Wired internet', `${s.networkDrops} network drops`, [[rates.networkDrop, s.networkDrops]]);
+  if (s.extras.stormShelter) line('storm-shelter', 'Must-have extras', 'Below-ground storm shelter', 'one outdoor in-ground shelter, installed', [[rates.stormShelter, 1]]);
+  if (s.extras.woodStove) line('wood-stove', 'Must-have extras', 'Wood stove', 'freestanding stove with chimney, installed', [[rates.woodStove, 1]]);
+  if (s.extras.generatorHookup) line('generator', 'Must-have extras', 'Generator hookup', 'inlet and transfer switch, generator not included', [[rates.generatorHookup, 1]]);
+  if (s.extras.network) line('network', 'Must-have extras', 'Wired internet', `${s.networkDrops} network drops`, [[rates.networkDrop, s.networkDrops]]);
 
   // ---- Builder, loan and risk
   const builderManaged = items.filter((i) => i.group !== 'Before you build');
@@ -348,6 +388,7 @@ export function estimate(option: OptionPlan, rates: Rates, s: Settings): Estimat
   return {
     option,
     quantities: q,
+    settings: s,
     items,
     construction,
     total,

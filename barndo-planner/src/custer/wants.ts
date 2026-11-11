@@ -1,73 +1,75 @@
 /**
  * The owner's checklist answers (saved 11 Nov 2026) and how each floor plan option meets them.
  * 'yes' = built into the base plan and price, 'part' = partly met, 'no' = not in the base plan,
- * 'addon' = available as a priced add-on, not counted as met.
+ * 'addon' = available as a priced add-on, not counted as met, 'later' = left out of this build
+ * to meet a budget ceiling but planned for, not counted as met.
  */
-export type Met = 'yes' | 'part' | 'no' | 'addon';
-export type OptionId = 'a' | 'b' | 'c' | 'd';
+export type Met = 'yes' | 'part' | 'no' | 'addon' | 'later';
+export type OptionId = 'a' | 'b' | 'c' | 'd' | 'e';
+type Row = [Met, Met, Met, Met, Met];
 
 export interface Want {
   id: string;
   label: string;
   rank: 'must' | 'nice' | 'no';
-  /** How options a, b, c, d meet it, in that order. Omitted when the want is not scored. */
-  met?: [Met, Met, Met, Met];
+  /** How options a, b, c, d, e meet it, in that order. Omitted when the want is not scored. */
+  met?: Row;
   /** Why a want is left out of the scoring, or a note on how it is met. */
   note?: string;
 }
 
-const ALL: [Met, Met, Met, Met] = ['yes', 'yes', 'yes', 'yes'];
-const NONE: [Met, Met, Met, Met] = ['no', 'no', 'no', 'no'];
-const ADDON: [Met, Met, Met, Met] = ['addon', 'addon', 'addon', 'addon'];
+const ALL: Row = ['yes', 'yes', 'yes', 'yes', 'yes'];
+const NONE: Row = ['no', 'no', 'no', 'no', 'no'];
+const ADDON: Row = ['addon', 'addon', 'addon', 'addon', 'addon'];
 
 export const WANTS: Want[] = [
   // ---- Must-haves (18)
   { id: 'r-primary-suite', rank: 'must', label: 'Primary bedroom with its own bathroom', met: ALL },
-  { id: 'p-wrap', rank: 'must', label: 'Wraparound porch', met: ALL, note: 'Porch wraps the front and one end of every option.' },
+  { id: 'p-wrap', rank: 'must', label: 'Wraparound porch', met: ['yes', 'yes', 'yes', 'yes', 'part'], note: 'Porch wraps the front and one end of every option.' },
   { id: 's-later', rank: 'must', label: 'Detached shop later, not part of this build', met: ALL, note: 'No shop is priced. Each plan leaves both gable ends free for a later building.' },
   { id: 'c-vault', rank: 'must', label: 'Vaulted great room', met: ALL },
   { id: 'k-island', rank: 'must', label: 'Large island with seating', met: ALL },
   { id: 'k-pantry', rank: 'must', label: 'Walk-in pantry', met: ALL },
   { id: 'k-ushape', rank: 'must', label: 'U-shaped or L-shaped kitchen with more counter', met: ALL, note: 'L-shaped kitchen plus island in every option.' },
   { id: 'k-window', rank: 'must', label: 'Window over the sink', met: ALL },
-  { id: 'o-room', rank: 'must', label: 'Office with a door', met: ALL },
+  { id: 'o-room', rank: 'must', label: 'Office with a door', met: ['yes', 'yes', 'yes', 'yes', 'part'] },
   { id: 'o-wired', rank: 'must', label: 'Wired internet run to the office', met: ALL, note: 'Priced as network drops to the office and main rooms.' },
-  { id: 'ss-underground', rank: 'must', label: 'Below-ground shelter outside or under the garage floor', met: ALL, note: 'Priced as an outdoor in-ground shelter, since there is no garage.' },
-  { id: 'a-onelevel', rank: 'must', label: 'Everything I use daily on one level', met: ['yes', 'yes', 'part', 'yes'], note: 'Option C keeps the primary suite, kitchen, laundry and office downstairs but puts three bedrooms upstairs.' },
+  { id: 'ss-underground', rank: 'must', label: 'Below-ground shelter outside or under the garage floor', met: ['yes', 'yes', 'yes', 'yes', 'later'], note: 'Priced as an outdoor in-ground shelter, since there is no garage.' },
+  { id: 'a-onelevel', rank: 'must', label: 'Everything I use daily on one level', met: ['yes', 'yes', 'part', 'yes', 'yes'], note: 'Option C keeps the primary suite, kitchen, laundry and office downstairs but puts three bedrooms upstairs.' },
   { id: 'h-heatpump', rank: 'must', label: 'Central electric heat pump with ducts', met: ALL },
-  { id: 'h-wood', rank: 'must', label: 'Wood stove or fireplace', met: ALL, note: 'Priced as a freestanding wood stove with a chimney.' },
+  { id: 'h-wood', rank: 'must', label: 'Wood stove or fireplace', met: ['yes', 'yes', 'yes', 'yes', 'later'], note: 'Priced as a freestanding wood stove with a chimney.' },
   { id: 'h-generator', rank: 'must', label: 'Generator hookup for outages', met: ALL, note: 'Priced as an inlet and transfer switch, not the generator itself.' },
   { id: 'e-bb', rank: 'must', label: 'Board-and-batten or wood accents', met: ALL, note: 'Board-and-batten profile steel siding with wood porch posts.' },
   { id: 'e-farm', rank: 'must', label: 'White farmhouse look with a dark roof', met: ALL },
   { id: 'e-glass', rank: 'must', label: 'Big windows or glass doors on the view side', met: ALL, note: 'Each plan can be mirrored or turned so the glass faces your view.' },
 
   // ---- Nice-to-haves that the plans can be scored on (33)
-  { id: 'r-primary-wic', rank: 'nice', label: 'Walk-in closet in the primary bedroom', met: ['yes', 'yes', 'part', 'yes'], note: 'Option C has a small 4 x 6 ft closet.' },
-  { id: 'r-split', rank: 'nice', label: 'Split bedrooms, primary on the opposite side', met: ['part', 'yes', 'yes', 'yes'] },
+  { id: 'r-primary-wic', rank: 'nice', label: 'Walk-in closet in the primary bedroom', met: ['yes', 'yes', 'part', 'yes', 'yes'], note: 'Option C has a small 4 x 6 ft closet.' },
+  { id: 'r-split', rank: 'nice', label: 'Split bedrooms, primary on the opposite side', met: ['part', 'yes', 'yes', 'yes', 'yes'] },
   { id: 'r-open', rank: 'nice', label: 'Open kitchen, dining, and living in one great room', met: ALL },
-  { id: 'r-dining', rank: 'nice', label: 'Separate dining room', met: ['no', 'no', 'no', 'part'], note: 'Dining is open to the great room. Option D gives it its own bay.' },
+  { id: 'r-dining', rank: 'nice', label: 'Separate dining room', met: ['no', 'no', 'no', 'part', 'no'], note: 'Dining is open to the great room. Option D gives it its own bay.' },
   { id: 'r-laundry', rank: 'nice', label: 'Laundry room with a door', met: ALL },
-  { id: 'r-mudroom', rank: 'nice', label: 'Mudroom', met: ['no', 'no', 'yes', 'yes'] },
-  { id: 'r-bonus', rank: 'nice', label: 'Second living area or bonus room', met: ['no', 'yes', 'part', 'no'] },
-  { id: 'r-nohall', rank: 'nice', label: 'Shortest possible hallways', met: ['part', 'yes', 'part', 'yes'] },
+  { id: 'r-mudroom', rank: 'nice', label: 'Mudroom', met: ['no', 'no', 'yes', 'yes', 'no'] },
+  { id: 'r-bonus', rank: 'nice', label: 'Second living area or bonus room', met: ['no', 'yes', 'part', 'no', 'no'] },
+  { id: 'r-nohall', rank: 'nice', label: 'Shortest possible hallways', met: ['part', 'yes', 'part', 'yes', 'yes'] },
   { id: 'p-front', rank: 'nice', label: 'Covered front porch', met: ALL },
   { id: 'p-back', rank: 'nice', label: 'Covered back porch or patio', met: NONE, note: 'Not in the base plans. A back porch is a priced add-on.' },
   { id: 'p-screen', rank: 'nice', label: 'Screened porch', met: NONE, note: 'Not in the base plans. Screening the end porch is a priced add-on.' },
-  { id: 'p-deep', rank: 'nice', label: 'Porch deep enough for a table, 10 ft or more', met: ['no', 'no', 'no', 'yes'] },
-  { id: 'st-coat', rank: 'nice', label: 'Coat and linen closets', met: ['yes', 'no', 'yes', 'yes'] },
-  { id: 'st-attic', rank: 'nice', label: 'Storage loft above the shop or bedrooms', met: ['no', 'yes', 'yes', 'no'] },
-  { id: 'st-mech', rank: 'nice', label: 'Mechanical room', met: ['part', 'part', 'yes', 'part'], note: 'Where there is no separate room, the water heater and air handler share the laundry.' },
-  { id: 'st-safe', rank: 'nice', label: 'Secure closet for valuables or a gun safe', met: ['no', 'no', 'yes', 'yes'] },
-  { id: 'st-freezer', rank: 'nice', label: 'Space for a chest freezer or second refrigerator', met: ['part', 'yes', 'part', 'yes'] },
+  { id: 'p-deep', rank: 'nice', label: 'Porch deep enough for a table, 10 ft or more', met: ['no', 'no', 'no', 'yes', 'no'] },
+  { id: 'st-coat', rank: 'nice', label: 'Coat and linen closets', met: ['yes', 'no', 'yes', 'yes', 'no'] },
+  { id: 'st-attic', rank: 'nice', label: 'Storage loft above the shop or bedrooms', met: ['no', 'yes', 'yes', 'no', 'no'] },
+  { id: 'st-mech', rank: 'nice', label: 'Mechanical room', met: ['part', 'part', 'yes', 'part', 'part'], note: 'Where there is no separate room, the water heater and air handler share the laundry.' },
+  { id: 'st-safe', rank: 'nice', label: 'Secure closet for valuables or a gun safe', met: ['no', 'no', 'yes', 'yes', 'no'] },
+  { id: 'st-freezer', rank: 'nice', label: 'Space for a chest freezer or second refrigerator', met: ['part', 'yes', 'part', 'yes', 'part'] },
   { id: 'o-guest', rank: 'nice', label: 'Office that doubles as a guest room', met: ALL },
-  { id: 'ss-saferoom', rank: 'nice', label: 'Reinforced safe room on the slab', met: ['no', 'no', 'part', 'yes'] },
+  { id: 'ss-saferoom', rank: 'nice', label: 'Reinforced safe room on the slab', met: ['no', 'no', 'part', 'yes', 'no'] },
   { id: 'ss-basement', rank: 'nice', label: 'Basement', met: NONE, note: 'Left out of every option. It works against the lowest-cost goal.' },
   { id: 'a-nostep', rank: 'nice', label: 'No-step entry', met: ALL },
   { id: 'a-doors', rank: 'nice', label: '36 inch doors and wide halls', met: ALL },
   { id: 'a-shower', rank: 'nice', label: 'Curbless walk-in shower', met: ALL },
   { id: 'a-blocking', rank: 'nice', label: 'Wall blocking for future grab bars', met: ALL },
   { id: 'e-metal', rank: 'nice', label: 'All-metal siding', met: ALL },
-  { id: 'h-minisplit', rank: 'nice', label: 'Ductless mini-splits', met: ['no', 'part', 'no', 'no'], note: 'Only the bonus loft in option B uses one.' },
+  { id: 'h-minisplit', rank: 'nice', label: 'Ductless mini-splits', met: ['no', 'part', 'no', 'no', 'no'], note: 'Only the bonus loft in option B uses one.' },
   { id: 'c-beams', rank: 'nice', label: 'Exposed trusses or beams', met: ADDON },
   { id: 'k-gas', rank: 'nice', label: 'Propane gas range', met: ADDON },
   { id: 'k-custom', rank: 'nice', label: 'Custom cabinets instead of stock sizes', met: ADDON, note: 'Part of the high finish level.' },
@@ -96,11 +98,14 @@ export const WANTS: Want[] = [
   { id: 'h-geo', rank: 'no', label: 'Geothermal heat pump' },
 ];
 
-const INDEX: Record<OptionId, number> = { a: 0, b: 1, c: 2, d: 3 };
+export const OPTION_INDEX: Record<OptionId, number> = { a: 0, b: 1, c: 2, d: 3, e: 4 };
+const INDEX = OPTION_INDEX;
 
 export interface WantScore {
   mustMet: number;
   mustTotal: number;
+  /** Must-haves left out of this build but planned for a later phase. */
+  mustLater: number;
   niceMet: number;
   niceTotal: number;
 }
@@ -114,6 +119,7 @@ export function scoreWants(option: OptionId): WantScore {
   return {
     mustMet: musts.reduce((s, w) => s + value((w.met as Met[])[i]), 0),
     mustTotal: musts.length,
+    mustLater: musts.filter((w) => (w.met as Met[])[i] === 'later').length,
     niceMet: nices.reduce((s, w) => s + value((w.met as Met[])[i]), 0),
     niceTotal: nices.length,
   };
