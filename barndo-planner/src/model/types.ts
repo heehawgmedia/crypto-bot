@@ -16,6 +16,7 @@ export type RoomType =
   | 'pantry'
   | 'hallway'
   | 'utility'
+  | 'stair'
   | 'shop'
   | 'garage';
 
@@ -36,6 +37,8 @@ export interface Room {
   w: number;
   d: number;
   doors: RoomDoor[];
+  /** An open zone (kitchen, dining, living, an open stair): labeled floor area with no walls of its own. */
+  open?: boolean;
 }
 
 export type ExteriorDoorKind = 'entry' | 'french' | 'sliding' | 'overhead-10' | 'overhead-16';

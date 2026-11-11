@@ -28,6 +28,7 @@ export const ROOM_TYPES: Record<RoomType, RoomTypeInfo> = {
   pantry: { label: 'Pantry', color: '#d6c7a1', w: 5, d: 6, noWindows: true },
   hallway: { label: 'Hallway', color: '#e3dfd3', w: 4, d: 16, noWindows: true },
   utility: { label: 'Utility / mech', color: '#b0b8c0', w: 6, d: 6, noWindows: true },
+  stair: { label: 'Stairs', color: '#cbb89a', w: 4, d: 14, noWindows: true },
   shop: { label: 'Shop', color: '#9aa5b1', w: 30, d: 30, shop: true, noWindows: true },
   garage: { label: 'Garage', color: '#a9a9b8', w: 24, d: 24, shop: true, noWindows: true },
 };

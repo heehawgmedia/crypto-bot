@@ -183,6 +183,8 @@ export function deriveWalls(plan: Plan): WallSegment[] {
 
   const doorTop = Math.min(INTERIOR_DOOR_HEIGHT, plan.wallHeight - 0.5);
   for (const room of plan.rooms) {
+    // Open zones have no walls or doors of their own; walls around them come from their walled neighbors.
+    if (room.open) continue;
     for (const side of SIDES) {
       const e = edgeLine(room, side);
       if (!perimeterSide(plan, e.axis, e.at)) get(e.axis, e.at).intervals.push([e.start, e.end]);
@@ -422,7 +424,7 @@ export function areaSummary(plan: Plan): AreaSummary {
 
 /** A sensible spot to start a walkthrough: the middle of the largest open living rectangle, else the largest living room, else anywhere. */
 export function spawnPoint(plan: Plan): { x: number; z: number } {
-  const open = rectMinus(footprintRect(plan), plan.rooms).filter((r) => r.w >= 3 && r.d >= 3);
+  const open = rectMinus(footprintRect(plan), plan.rooms.filter((r) => !r.open)).filter((r) => r.w >= 3 && r.d >= 3);
   const living = plan.rooms.filter((r) => !isShopRoom(r));
   const byArea = (list: Rect[]): Rect | undefined => [...list].sort((a, b) => roomArea(b) - roomArea(a))[0];
   const pick = byArea(open) ?? byArea(living) ?? byArea(plan.rooms);
