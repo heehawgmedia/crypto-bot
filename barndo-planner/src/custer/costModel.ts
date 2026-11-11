@@ -68,8 +68,16 @@ export interface Estimate {
   items: LineItem[];
   /** Labor and materials the builder manages. */
   construction: Range;
+  /**
+   * Expected total with a likely range. The low and high ends assume half of the possible swing:
+   * every line landing at its cheapest (or dearest) at once is not realistic.
+   */
   total: Range;
+  /** The totals if every single line came in at its low end, or at its high end. */
+  extremes: { low: number; high: number };
   perHeatedSf: Range;
+  /** The house alone (structure, envelope, systems, interior) with the builder's fee: the figure most cost guides quote. */
+  houseOnly: { withPorch: number; withoutPorch: number; perSf: number; perSfUnderRoof: number };
   /** Share of the expected total that rests on published prices or official fees. */
   solidShare: number;
 }
@@ -79,6 +87,7 @@ export interface Rates {
   plans: Rate;
   engineering: Rate;
   permits: Rate;
+  permitsLocal: Rate;
   survey: Rate;
   soilTest: Rate;
   sitePrepPerSf: Rate;
@@ -122,6 +131,9 @@ export interface Rates {
   networkDrop: Rate;
 }
 
+/** Share of the all-low or all-high swing used for the likely range of a total. */
+export const POOL = 0.5;
+const HOUSE_GROUPS: Group[] = ['Structure', 'Envelope', 'Systems', 'Interior'];
 const round = (v: number): number => Math.round(v / 10) * 10;
 const times = (r: Range, q: number): Range => ({ low: round(r.low * q), mid: round(r.mid * q), high: round(r.high * q) });
 const add = (a: Range, b: Range): Range => ({ low: a.low + b.low, mid: a.mid + b.mid, high: a.high + b.high });
@@ -177,7 +189,8 @@ export function estimate(option: OptionPlan, rates: Rates, s: Settings): Estimat
     [rates.plans, 1],
     [rates.engineering, 1],
   ]);
-  line('permits', 'Before you build', 'Permits and inspections', `electrical, plumbing (${q.plumbingFixtures} fixtures), HVAC and septic permits`, [[rates.permits, 1]]);
+  line('permits', 'Before you build', 'Permits and inspections', `state electrical, plumbing (${q.plumbingFixtures} fixtures), HVAC and septic fees`, [[rates.permits, 1]]);
+  line('permits-local', 'Before you build', 'County and health department fees', 'county building permit, local electrical inspector, septic site evaluation', [[rates.permitsLocal, 1]]);
   line('survey', 'Before you build', 'Survey and soil or perc test', 'boundary survey and septic site evaluation', [
     [rates.survey, 1],
     [rates.soilTest, 1],
@@ -230,7 +243,9 @@ export function estimate(option: OptionPlan, rates: Rates, s: Settings): Estimat
   line('hvac', 'Systems', 'HVAC', `central ducted heat pump for ${fmt(q.heatedSf)} sq ft`, [[rates.hvacPerSf, q.heatedSf]]);
 
   // ---- Interior
-  line('framing', 'Interior', 'Framing of interior walls', `${fmt(q.interiorWallFt)} ft of partitions`, [[rates.partitionPerFt, q.interiorWallFt]]);
+  line('framing', 'Interior', 'Framing of interior walls', `${fmt(q.interiorWallFt)} ft of partitions plus ${fmt(q.perimeterFt)} ft of framing inside the exterior walls`, [
+    [rates.partitionPerFt, q.interiorWallFt + q.perimeterFt],
+  ]);
   line('drywall', 'Interior', 'Drywall', `${fmt(drywallSf)} sq ft of wall and ceiling board`, [[rates.drywallPerSf, drywallSf]]);
   line('flooring', 'Interior', 'Flooring', `${fmt(q.heatedSf)} sq ft`, [[rates.flooringPerSf, q.heatedSf]]);
   line('cabinets', 'Interior', 'Cabinets and counters', `${cab.cabinetFt} ft of cabinets, ${cab.counterSf} sq ft of countertop`, [
@@ -323,15 +338,22 @@ export function estimate(option: OptionPlan, rates: Rates, s: Settings): Estimat
     note: 'The 10 to 15 percent you asked for.',
   });
 
-  const total = items.reduce((sum, i) => add(sum, i.total), ZERO);
-  const solid = items.filter((i) => i.confidence === 'published' || i.confidence === 'official').reduce((sum, i) => sum + i.total.mid, 0);
+  const sum = items.reduce((acc, i) => add(acc, i.total), ZERO);
+  const total: Range = { low: round(sum.mid - (sum.mid - sum.low) * POOL), mid: sum.mid, high: round(sum.mid + (sum.high - sum.mid) * POOL) };
+  const solid = items.filter((i) => i.confidence === 'published' || i.confidence === 'official').reduce((acc, i) => acc + i.total.mid, 0);
+  const house = items.filter((i) => HOUSE_GROUPS.includes(i.group));
+  const fee = 1 + s.gcPct.mid / 100;
+  const withPorch = round(house.reduce((acc, i) => acc + i.total.mid, 0) * fee);
+  const withoutPorch = round(house.filter((i) => i.id !== 'porches').reduce((acc, i) => acc + i.total.mid, 0) * fee);
   return {
     option,
     quantities: q,
     items,
     construction,
     total,
+    extremes: { low: sum.low, high: sum.high },
     perHeatedSf: { low: Math.round(total.low / q.heatedSf), mid: Math.round(total.mid / q.heatedSf), high: Math.round(total.high / q.heatedSf) },
-    solidShare: total.mid ? solid / total.mid : 0,
+    houseOnly: { withPorch, withoutPorch, perSf: Math.round(withoutPorch / q.heatedSf), perSfUnderRoof: Math.round(withPorch / (q.heatedSf + q.porchSf)) },
+    solidShare: sum.mid ? solid / sum.mid : 0,
   };
 }

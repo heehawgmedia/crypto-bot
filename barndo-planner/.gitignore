@@ -4,3 +4,5 @@ dist/
 *.log
 .vite/
 dist-single/
+dist-report/
+dist-preview/
